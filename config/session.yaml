@@ -1,0 +1,8 @@
+# Market session and intraday timings (IST)
+timezone: Asia/Kolkata
+market_open: "09:15"
+market_close: "15:30"
+skip_first_minutes: 0            # no new entries for N minutes after open
+intraday_no_new_entries: "15:00"
+intraday_squareoff: "15:15"      # keep this before the broker's own auto square-off
+expiry_day_no_new_entries: "13:00"

@@ -1,0 +1,17 @@
+.env
+.env.local
+*.token
+upstox_runtime/
+exports/
+*.parquet
+!tests/fixtures/**/*.parquet
+*.db
+*.sqlite
+logs/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.claude/settings.local.json
+CLAUDE.local.md

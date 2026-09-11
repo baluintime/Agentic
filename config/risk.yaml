@@ -1,0 +1,9 @@
+# Starting values — adjust to your capital and risk appetite
+max_daily_loss_total: 5000
+max_daily_loss_per_pipeline: 2000
+max_trades_per_day_per_pipeline: 10
+max_open_positions: 5
+max_lots_per_order: 5
+max_capital_per_stock_order: 100000
+max_orders_per_second: 5         # confirm against current SEBI/Upstox retail algo limits
+live_requires_confirmation: true

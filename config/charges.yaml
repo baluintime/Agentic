@@ -1,0 +1,12 @@
+# Fill from Upstox's current charges page and statutory rates before Phase 3. Do not guess.
+effective_from: null
+brokerage:
+  equity_intraday: null
+  equity_delivery: null
+  futures: null
+  options: null
+stt: {equity_intraday_sell: null, equity_delivery: null, futures_sell: null, options_sell_premium: null}
+exchange_txn: {nse_equity: null, nse_futures: null, nse_options_premium: null}
+sebi_fee_per_crore: null
+stamp_duty_buy: {equity_intraday: null, equity_delivery: null, futures: null, options: null}
+gst_rate: null

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upstox-agents"
+version = "0.1.0"
+description = "Offline multi-agent trading platform for Upstox"
+requires-python = ">=3.11"
+dependencies = [
+    "nicegui>=1.4",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "pydantic>=2.5",
+    "pyyaml>=6",
+    "python-dotenv>=1",
+    "httpx>=0.26",
+    "websockets>=12",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "broker*", "system_agents*", "agents*", "ui*", "tools*", "app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "core", "broker", "system_agents", "agents"]
+python_files = ["test_*.py"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "agents/*/_template"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+# UP042/B024: docs/CONTRACTS.md fixes the `str, Enum` and `ABC` shapes of the public contracts.
+ignore = ["B008", "E731", "UP042", "B024"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+"**/test_*.py" = ["E501"]

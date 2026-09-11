@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(python -m tools.new_agent:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(~/upstox_runtime/**)",
+      "Read(./exports/**)",
+      "Read(./**/*.parquet)",
+      "Bash(git push --force:*)"
+    ]
+  }
+}

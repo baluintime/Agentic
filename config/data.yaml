@@ -1,0 +1,7 @@
+# History loaded once per morning; actual length = max(these, largest indicator warm-up)
+history_days:
+  "1m": 5
+  "5m": 5
+  "1d": 200
+option_strike_window: 2          # subscribe ATM ± N strikes (CE and PE)
+stale_tick_seconds: 30           # Health agent pauses entries if no tick for this long
