@@ -202,3 +202,35 @@ async def test_a_pipeline_added_in_a_normal_session_is_free_to_trade(tmp_path, s
     pipeline = await engine.add_pipeline(spec())
     assert not pipeline.strategy.new_entries_blocked and not pipeline.strategy.halted
     await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_instruments_load_even_when_logged_out(tmp_path, sim_clock) -> None:
+    """The instrument file is a public asset: the dropdown must fill before login."""
+    engine = await build(tmp_path)
+    calls: list[bool] = []
+
+    async def fake_load(*args, **kwargs):
+        calls.append(True)
+        return 42
+
+    engine.instruments.load = fake_load
+    report = await engine.connect()
+    assert not report["token"]["valid"]
+    assert calls == [True]
+    assert report["instruments"] == 42
+    assert "reconciliation" not in report  # that one does need a token
+    await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_instrument_download_does_not_break_startup(tmp_path, sim_clock) -> None:
+    engine = await build(tmp_path)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("no network")
+
+    engine.instruments.load = broken
+    report = await engine.connect()
+    assert "no network" in report["instruments_error"]
+    await engine.stop()

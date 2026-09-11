@@ -164,11 +164,14 @@ class Engine:
         state = self.auth.load()
         state = await self.auth.validate(self.rest)
         report["token"] = state.redacted()
+        # The instrument file is a public asset — load it even when logged out, so
+        # the pipeline builder can offer instruments before the daily login.
+        try:
+            report["instruments"] = await self.instruments.load()
+        except Exception as exc:
+            report["instruments_error"] = str(exc)
+            log.warning("instrument master not loaded: %s", exc)
         if state.valid:
-            try:
-                report["instruments"] = await self.instruments.load()
-            except Exception as exc:
-                report["instruments_error"] = str(exc)
             report["reconciliation"] = await self.persistence.reconcile()
         return report
 

@@ -349,3 +349,34 @@ def test_simulated_leg_triggers(side, ltp, expected) -> None:
     leg = SimulatedLeg("c", "K", side, 75, 100.0, target, stop)
     hit = leg.check(ltp)
     assert (hit[0] if hit else None) == expected
+
+
+# -- the console's instrument dropdown ---------------------------------------
+def test_tradable_lists_every_underlying_with_a_label(master) -> None:
+    rows = master.tradable()
+    keys = {row["instrument_key"] for row in rows}
+    assert keys == {NIFTY_KEY, "NSE_EQ|INE002A01018"}  # index and equity, no options
+    labels = {row["instrument_key"]: row["label"] for row in rows}
+    assert labels["NSE_EQ|INE002A01018"] == "RELIANCE · Reliance Industries (NSE_EQ)"
+    assert labels[NIFTY_KEY] == "Nifty 50 (NSE_INDEX)"  # name repeats the symbol
+
+
+def test_tradable_puts_indices_first(master) -> None:
+    rows = master.tradable()
+    assert rows[0]["instrument_type"] == "INDEX"
+
+
+def test_tradable_excludes_options_and_futures(master) -> None:
+    types = {row["instrument_type"] for row in master.tradable()}
+    assert types == {"INDEX", "EQ"}
+
+
+def test_tradable_is_empty_before_the_file_is_loaded() -> None:
+    assert InstrumentMaster().tradable() == []
+
+
+def test_tradable_deduplicates_by_instrument_key() -> None:
+    records = nifty_records() + nifty_records()  # the same file loaded twice
+    rows = InstrumentMaster.from_records(records).tradable()
+    keys = [row["instrument_key"] for row in rows]
+    assert len(keys) == len(set(keys))

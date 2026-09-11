@@ -23,6 +23,8 @@ from core import clock
 from core.contracts import Instrument, OptionType, Segment
 from core.rest_urls import INSTRUMENTS_URL
 
+TRADABLE_TYPES = ("EQ", "INDEX")
+
 COLUMNS = [
     "instrument_key",
     "trading_symbol",
@@ -105,13 +107,36 @@ class InstrumentMaster:
             return None
         return int(row["freeze_quantity"])
 
+    def tradable(self) -> list[dict]:
+        """Every underlying a pipeline may be built on, indices first then equities.
+
+        This is what the console's instrument dropdown is built from, so it
+        carries a ready-made `label` for each row.
+        """
+        if self.empty:
+            return []
+        frame = self.frame[self.frame["instrument_type"].isin(TRADABLE_TYPES)].copy()
+        # One row per key: the dropdown is keyed by instrument_key, so a duplicate
+        # would silently vanish from the list while still inflating the count.
+        frame = frame.drop_duplicates(subset="instrument_key", keep="first")
+        frame["_rank"] = (frame["instrument_type"] != "INDEX").astype(int)
+        frame = frame.sort_values(["_rank", "trading_symbol"])
+        rows = frame[
+            ["instrument_key", "trading_symbol", "name", "segment", "instrument_type"]
+        ].to_dict("records")
+        for row in rows:
+            name = row["name"]
+            suffix = f" · {name}" if name and name != row["trading_symbol"] else ""
+            row["label"] = f"{row['trading_symbol']}{suffix} ({row['segment']})"
+        return rows
+
     def search(self, query: str, limit: int = 25, tradable_only: bool = True) -> list[dict]:
         """Powers the instrument picker in the console."""
         if self.empty or not query:
             return []
         frame = self.frame
         if tradable_only:
-            frame = frame[frame["instrument_type"].isin(["EQ", "INDEX"])]
+            frame = frame[frame["instrument_type"].isin(TRADABLE_TYPES)]
         needle = query.upper()
         mask = frame["trading_symbol"].str.upper().str.contains(needle, na=False, regex=False)
         mask |= frame["name"].str.upper().str.contains(needle, na=False, regex=False)

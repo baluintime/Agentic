@@ -33,6 +33,7 @@ class PipelineBuilder:
             "expiry_rule": "nearest_weekly",
         }
         self.instrument: dict | None = None
+        self.labels: dict[str, dict] = {}
         self.indicator_form: dict[str, Any] = {}
         self.strategy_form: dict[str, Any] = {}
         self.dialog = ui.dialog()
@@ -62,12 +63,25 @@ class PipelineBuilder:
     def _build(self) -> None:
         with self.dialog, ui.card().classes("w-[680px]"):
             ui.label("New pipeline").classes("text-lg font-medium")
-            self.search = ui.input("Instrument", placeholder="NIFTY, RELIANCE, ...").classes(
-                "w-full"
-            )
-            self.search.on("keydown.enter", self.do_search)
-            self.results = ui.column().classes("w-full gap-0")
-            self.chosen = ui.label("no instrument selected").classes("text-sm text-gray-500")
+            with ui.row().classes("w-full items-end gap-2"):
+                # One searchable dropdown over every tradable underlying: type to
+                # filter, or open it and scroll. No separate search step.
+                self.instrument_select = (
+                    ui.select(
+                        options={},
+                        label="Instrument",
+                        with_input=True,
+                        on_change=self.on_instrument,
+                    )
+                    .classes("flex-1")
+                    .props('clearable hide-selected fill-input input-debounce="0"')
+                )
+                self.reload_button = ui.button(
+                    icon="refresh", on_click=self.load_instruments
+                ).props("flat dense")
+                self.reload_button.tooltip("Download today's instrument file")
+            self.instrument_note = ui.label("").classes("text-xs text-gray-500")
+            self.refresh_instruments()
 
             with ui.row().classes("w-full gap-4"):
                 self.segment = ui.select(
@@ -114,26 +128,35 @@ class PipelineBuilder:
 
     # -- interactions --------------------------------------------------------
     def open(self) -> None:
+        self.refresh_instruments()  # a login may have loaded them since last time
         self.dialog.open()
 
-    def do_search(self) -> None:
-        self.results.clear()
-        matches = self.engine.instruments.search(self.search.value or "")
-        with self.results:
-            if not matches:
-                ui.label("nothing found — is the instrument master loaded?").classes(
-                    "text-xs text-gray-500"
-                )
-            for match in matches[:10]:
-                ui.button(
-                    f"{match['trading_symbol']} · {match['segment']}",
-                    on_click=lambda m=match: self.pick(m),
-                ).props("flat dense align=left").classes("w-full")
+    def refresh_instruments(self) -> None:
+        """Rebuild the dropdown from the Instrument Master."""
+        rows = self.engine.instruments.tradable()
+        self.instrument_select.set_options({row["instrument_key"]: row["label"] for row in rows})
+        self.labels = {row["instrument_key"]: row for row in rows}
+        if rows:
+            self.instrument_note.set_text(f"{len(rows):,} instruments — type to filter")
+        else:
+            self.instrument_note.set_text(
+                "no instruments loaded — press refresh to download today's instrument file"
+            )
 
-    def pick(self, match: dict) -> None:
-        self.instrument = match
-        self.chosen.set_text(f"{match['trading_symbol']} ({match['instrument_key']})")
-        self.results.clear()
+    async def load_instruments(self) -> None:
+        self.reload_button.props("loading")
+        try:
+            count = await self.engine.instruments.load(force=True)
+        except Exception as exc:
+            ui.notify(f"could not download the instrument file: {exc}", type="negative")
+            return
+        finally:
+            self.reload_button.props(remove="loading")
+        self.refresh_instruments()
+        ui.notify(f"loaded {count:,} instruments")
+
+    def on_instrument(self, event) -> None:
+        self.instrument = self.labels.get(event.value)
 
     def on_segment(self, event) -> None:
         self.choice["segment"] = event.value
@@ -162,7 +185,12 @@ class PipelineBuilder:
 
     async def create(self) -> None:
         if not self.instrument:
-            ui.notify("pick an instrument first", type="warning")
+            ui.notify(
+                "pick an instrument from the dropdown"
+                if self.labels
+                else "no instruments loaded — press refresh next to the dropdown",
+                type="warning",
+            )
             return
         if not (self.choice.get("indicator") and self.choice.get("strategy")):
             ui.notify("pick an indicator and a strategy", type="warning")
