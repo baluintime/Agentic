@@ -72,4 +72,5 @@ Append one line per decision: `YYYY-MM-DD — decision — reason`.
 2026-09-11 — Upstox endpoint paths live in one `Endpoints` dataclass in `broker/rest.py` — the docs site is not reachable from the build environment, so a doc change is a one-line edit rather than a hunt.
 2026-09-11 — Tests block real sockets (`tests/conftest.py`) and redirect `UPSTOX_RUNTIME_DIR` — "tests are offline" is enforced rather than assumed.
 2026-09-11 — Live arming also requires the paper-first promotion rule to pass — the Analytics agent counts distinct paper sessions per strategy.
-
+2026-09-11 — The Square-off agent skips the positions check when the token is invalid, and retries the verification on a later tick once the broker is reachable — starting the console after 15:15 while logged out produced a 401 and an ERROR line for a check that could never have succeeded. `flat_verified: null` now means "not checked", which is not the same as "flat".
+2026-09-11 — `Engine.add_pipeline` catches a new strategy up on the session state it was not alive to hear (square-off cut-off, risk block, kill switch) — a pipeline added after the broadcast would otherwise start free to take entries.

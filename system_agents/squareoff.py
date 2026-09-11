@@ -33,9 +33,10 @@ class SquareOffAgent(BaseAgent):
     Config: ClassVar[type[BaseModel]] = SquareOffConfig
     description: ClassVar[str] = "Stops new entries and squares off before the broker does"
 
-    def __init__(self, *args: Any, rest=None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, rest=None, auth=None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.rest = rest
+        self.auth = auth
         self.no_new_entries_done: date | None = None
         self.squareoff_done: date | None = None
         self.flat_verified: bool | None = None
@@ -74,6 +75,16 @@ class SquareOffAgent(BaseAgent):
         if self.squareoff_done != today and now.time() >= _t(cfg.intraday_squareoff):
             self.squareoff_done = today
             await self.run_squareoff("scheduled square-off")
+            return
+        if self.squareoff_done == today and self.flat_verified is None and self.can_reach_broker:
+            # The square-off ran while logged out; verify now that the broker is reachable.
+            self.flat_verified = await self.verify_flat()
+            await self.emit(
+                system_topic("squareoff.done"),
+                SystemEvent(
+                    "squareoff.done", now, "deferred verification", {"flat": self.flat_verified}
+                ),
+            )
 
     async def run_squareoff(self, reason: str) -> None:
         """Cancel GTTs -> exit intraday positions -> verify flat."""
@@ -96,9 +107,22 @@ class SquareOffAgent(BaseAgent):
             ),
         )
 
-    async def verify_flat(self) -> bool | None:
-        """Confirm with the broker that no intraday position is left open."""
+    @property
+    def can_reach_broker(self) -> bool:
+        """A positions check needs a valid token; without one it is only 401 noise."""
         if self.rest is None:
+            return False
+        return self.auth is None or getattr(self.auth.state, "valid", False)
+
+    async def verify_flat(self) -> bool | None:
+        """Confirm with the broker that no intraday position is left open.
+
+        Returns None when the check could not be made at all, which is not the
+        same as "flat": the console shows `flat_verified: null` and says why.
+        """
+        if not self.can_reach_broker:
+            self.last_message = "square-off not verified — not logged in"
+            self.log.info(self.last_message)
             return None
         cfg: SquareOffConfig = self.config  # type: ignore[assignment]
         for attempt in range(cfg.verify_attempts):
@@ -107,6 +131,7 @@ class SquareOffAgent(BaseAgent):
             except Exception as exc:
                 self.fail(f"positions check failed: {exc}")
                 return None
+
             open_intraday = [
                 p
                 for p in positions

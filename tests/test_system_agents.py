@@ -368,3 +368,80 @@ def test_export_agent_skips_empty_frames(tmp_path) -> None:
     agent = RecorderAgent("recorder", None, None, store)
     export = ExportAgent("export", None, None, store, agents=lambda: [agent])
     assert export.export_agent(agent) is None
+
+
+@pytest.mark.asyncio
+async def test_squareoff_skips_the_positions_check_when_not_logged_in(sim_clock) -> None:
+    """Starting the console after the cut-off must not 401 against the broker."""
+
+    class Refusing(FakeRest):
+        async def positions(self):
+            raise AssertionError("must not call the broker without a valid token")
+
+    class LoggedOut:
+        state = type("State", (), {"valid": False})()
+
+    agent = SquareOffAgent(
+        "squareoff", SquareOffConfig(), EventBus(), rest=Refusing(), auth=LoggedOut()
+    )
+    assert await agent.verify_flat() is None
+    assert not agent.errors  # a logged-out check is expected, not an error
+    assert "not logged in" in agent.last_message
+
+
+@pytest.mark.asyncio
+async def test_squareoff_checks_positions_once_logged_in(sim_clock) -> None:
+    class LoggedIn:
+        state = type("State", (), {"valid": True})()
+
+    agent = SquareOffAgent(
+        "squareoff", SquareOffConfig(), EventBus(), rest=FakeRest(), auth=LoggedIn()
+    )
+    assert await agent.verify_flat() is True
+
+
+@pytest.mark.asyncio
+async def test_squareoff_without_an_auth_manager_still_checks(sim_clock) -> None:
+    agent = SquareOffAgent("squareoff", SquareOffConfig(), EventBus(), rest=FakeRest())
+    assert await agent.verify_flat() is True
+
+
+@pytest.mark.asyncio
+async def test_squareoff_verifies_later_once_the_token_arrives(sim_clock) -> None:
+    """Square-off at 15:15 while logged out, login at 15:40: verify then."""
+
+    class Auth:
+        state = type("State", (), {"valid": False})()
+
+    bus = EventBus()
+    await bus.start()
+    system = Collector(bus, "system.*")
+    auth = Auth()
+    agent = SquareOffAgent("squareoff", SquareOffConfig(), bus, rest=FakeRest(), auth=auth)
+
+    await agent.tick(datetime(2026, 9, 11, 15, 16, tzinfo=clock.IST))
+    await bus.drain()
+    assert agent.squareoff_done is not None and agent.flat_verified is None
+
+    auth.state.valid = True
+    await agent.tick(datetime(2026, 9, 11, 15, 40, tzinfo=clock.IST))
+    await bus.drain()
+    assert agent.flat_verified is True
+    assert [e.message for e in system.messages if e.kind == "squareoff.done"][-1] == (
+        "deferred verification"
+    )
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_squareoff_does_not_re_run_after_a_successful_verification(sim_clock) -> None:
+    bus = EventBus()
+    await bus.start()
+    system = Collector(bus, "system.*")
+    agent = SquareOffAgent("squareoff", SquareOffConfig(), bus, rest=FakeRest())
+    await agent.tick(datetime(2026, 9, 11, 15, 16, tzinfo=clock.IST))
+    await agent.tick(datetime(2026, 9, 11, 15, 40, tzinfo=clock.IST))
+    await bus.drain()
+    assert len([e for e in system.messages if e.kind == "squareoff.start"]) == 1
+    assert len([e for e in system.messages if e.kind == "squareoff.done"]) == 1
+    await bus.stop()

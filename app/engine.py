@@ -99,6 +99,7 @@ class Engine:
             self.bus,
             self.store,
             rest=self.rest,
+            auth=self.auth,
         )
         self.health = HealthAgent(
             "health",
@@ -210,6 +211,7 @@ class Engine:
         pipeline.candle_keys = self._candle_keys(spec)
         self.pipelines[spec.pipeline_id] = pipeline
         await self._subscribe_market_data(pipeline)
+        self.apply_session_state(strategy)
         if spec.paused:
             strategy.pause()
         log.info("pipeline %s added (%s)", spec.pipeline_id, spec.name)
@@ -234,6 +236,21 @@ class Engine:
 
     def pipeline(self, pipeline_id: str) -> Pipeline | None:
         return self.pipelines.get(pipeline_id)
+
+    def apply_session_state(self, strategy: StrategyAgent) -> None:
+        """Catch a new strategy up on system events it was not alive to hear.
+
+        A pipeline added after the square-off cut-off, or while the kill switch
+        is on, must not start taking entries because it missed the broadcast.
+        """
+        today = clock.now().date()
+        if self.squareoff.no_new_entries_done == today or self.squareoff.squareoff_done == today:
+            strategy.new_entries_blocked = True
+        if self.risk.blocked:
+            strategy.new_entries_blocked = True
+        if self.risk.killed:
+            strategy.halted = True
+            strategy.new_entries_blocked = True
 
     # -- shared agents -------------------------------------------------------
     def _candle_keys(self, spec: PipelineSpec) -> list[tuple[str, str]]:

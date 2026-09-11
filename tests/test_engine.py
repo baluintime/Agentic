@@ -165,3 +165,40 @@ async def test_kill_disarms_and_pauses_every_strategy(tmp_path, sim_clock) -> No
     await engine.bus.drain()
     assert not engine.armed_live and engine.risk.killed and pipeline.strategy.paused
     await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_added_after_the_cutoff_cannot_enter(tmp_path, sim_clock) -> None:
+    """Starting the console at 15:34 must not leave a new pipeline free to enter."""
+    engine = await build(tmp_path)
+    await engine.squareoff.tick(datetime(2026, 9, 11, 15, 20, tzinfo=clock.IST))
+    pipeline = await engine.add_pipeline(spec())
+    assert pipeline.strategy.new_entries_blocked
+    await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_added_while_killed_starts_halted(tmp_path, sim_clock) -> None:
+    engine = await build(tmp_path)
+    await engine.kill("test")
+    await engine.bus.drain()
+    pipeline = await engine.add_pipeline(spec())
+    assert pipeline.strategy.halted and pipeline.strategy.new_entries_blocked
+    await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_added_while_risk_is_blocked_cannot_enter(tmp_path, sim_clock) -> None:
+    engine = await build(tmp_path)
+    await engine.risk.block("daily loss limit hit")
+    pipeline = await engine.add_pipeline(spec())
+    assert pipeline.strategy.new_entries_blocked
+    await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_added_in_a_normal_session_is_free_to_trade(tmp_path, sim_clock) -> None:
+    engine = await build(tmp_path)
+    pipeline = await engine.add_pipeline(spec())
+    assert not pipeline.strategy.new_entries_blocked and not pipeline.strategy.halted
+    await engine.stop()
