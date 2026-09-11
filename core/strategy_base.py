@@ -84,6 +84,7 @@ class StrategyAgent(BaseAgent):
         self.last_reason = ""
         self._pending: dict[str, str] = {}  # correlation_id -> "entry" | "exit"
         self._exit_reason = ""
+        self._pending_reverse: tuple[Direction, IndicatorResult] | None = None
 
     # -- author API ----------------------------------------------------------
     def decide(self, result: IndicatorResult, pos: Position) -> Action | None:
@@ -134,9 +135,13 @@ class StrategyAgent(BaseAgent):
         mode = "reverse" if action is Action.REVERSE else self.cfg("on_opposite_signal", "exit")
         if mode == "ignore":
             return
-        await self._exit("reverse" if mode == "reverse" else "signal")
         if mode == "reverse":
-            await self._enter(wanted, result)
+            # Enter the other side only once the exit has actually filled, or the
+            # entry would overwrite a position that is still closing.
+            self._pending_reverse = (wanted, result)
+            await self._exit("reverse")
+            return
+        await self._exit("signal")
 
     async def _on_tick(self, tick: Tick) -> None:
         pos = self.position
@@ -153,6 +158,7 @@ class StrategyAgent(BaseAgent):
             reason = "kill_switch" if kind == "kill" else "squareoff"
             self.halted = kind == "kill"
             self.new_entries_blocked = True
+            self._pending_reverse = None
             if self.position.is_open and self._squareoff_applies():
                 await self._exit(reason)
         elif kind == "risk.block":
@@ -274,6 +280,7 @@ class StrategyAgent(BaseAgent):
         if status == OrderStatus.REJECTED.value:
             self._pending.pop(event.correlation_id, None)
             self.fail(f"order rejected: {event.message}")
+            self._pending_reverse = None
             if purpose == "entry":
                 pos.reset()
             else:
@@ -290,6 +297,7 @@ class StrategyAgent(BaseAgent):
                 OrderStatus.SQUARED_OFF.value: "squareoff",
             }[status]
             self._close_trade(event, reason)
+            await self._run_pending_reverse()
             return
         if purpose == "entry":
             if status in (OrderStatus.FILLED.value, OrderStatus.PARTIAL.value):
@@ -300,9 +308,15 @@ class StrategyAgent(BaseAgent):
             return
         if status == OrderStatus.FILLED.value:
             self._close_trade(event, self._exit_reason or "signal")
+            await self._run_pending_reverse()
         elif status == OrderStatus.CANCELLED.value:
             self._pending.pop(event.correlation_id, None)
             pos.state = PositionState.OPEN
+
+    async def _run_pending_reverse(self) -> None:
+        queued, self._pending_reverse = self._pending_reverse, None
+        if queued is not None and self.position.is_flat:
+            await self._enter(*queued)
 
     def _record_entry_fill(self, event: OrderEvent) -> None:
         pos = self.position

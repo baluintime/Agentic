@@ -120,7 +120,9 @@ class IndicatorAgent(BaseAgent):
             values=_row_values(cur, self.outputs),
             prev_values=_row_values(prev, self.outputs),
         )
-        if any(pd.isna(v) for v in result.values.values()):
+        # Both halves must be real numbers: a NaN previous value would make every
+        # "crossed above" comparison silently False.
+        if any(pd.isna(v) for v in (*result.values.values(), *result.prev_values.values())):
             return None
         self.last_result = result
         self.evaluations += 1

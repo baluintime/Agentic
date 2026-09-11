@@ -188,3 +188,110 @@ class Collector:
     @property
     def last(self):
         return self.messages[-1] if self.messages else None
+
+
+NIFTY_KEY = "NSE_INDEX|Nifty 50"
+
+
+def nifty_records(strikes: range = range(24_500, 25_301, 50)) -> list[dict]:
+    """A small synthetic instrument file: the index, its weekly options and a future."""
+    weeklies = [
+        int(datetime(2026, 9, day, 15, 30, tzinfo=clock.IST).timestamp() * 1000)
+        for day in (17, 24, 29)
+    ]
+    monthly = weeklies[-1]
+    records = [
+        {
+            "instrument_key": NIFTY_KEY,
+            "trading_symbol": "Nifty 50",
+            "name": "Nifty 50",
+            "exchange": "NSE",
+            "segment": "NSE_INDEX",
+            "instrument_type": "INDEX",
+            "lot_size": 1,
+            "tick_size": 5.0,
+        },
+        {
+            "instrument_key": "NSE_EQ|INE002A01018",
+            "trading_symbol": "RELIANCE",
+            "name": "Reliance Industries",
+            "exchange": "NSE",
+            "segment": "NSE_EQ",
+            "instrument_type": "EQ",
+            "lot_size": 1,
+            "tick_size": 5.0,
+        },
+        {
+            "instrument_key": "NSE_FO|NIFTYFUT",
+            "trading_symbol": "NIFTY FUT 29 SEP 26",
+            "name": "NIFTY",
+            "exchange": "NSE",
+            "segment": "NSE_FO",
+            "instrument_type": "FUT",
+            "lot_size": 75,
+            "tick_size": 5.0,
+            "freeze_quantity": 1800.0,
+            "expiry": monthly,
+            "underlying_key": NIFTY_KEY,
+        },
+    ]
+    for expiry in weeklies:
+        stamp = datetime.fromtimestamp(expiry / 1000, tz=clock.IST).strftime("%d %b %y").upper()
+        suffix = "" if expiry == weeklies[0] else f"_{stamp[:2]}"
+        for strike in strikes:
+            for option_type in ("CE", "PE"):
+                records.append(
+                    {
+                        "instrument_key": f"NSE_FO|{strike}{option_type}{suffix}",
+                        "trading_symbol": f"NIFTY {strike} {option_type} {stamp}",
+                        "name": "NIFTY",
+                        "exchange": "NSE",
+                        "segment": "NSE_FO",
+                        "instrument_type": option_type,
+                        "lot_size": 75,
+                        "tick_size": 5.0,
+                        "freeze_quantity": 1800.0,
+                        "expiry": expiry,
+                        "strike_price": float(strike),
+                        "underlying_key": NIFTY_KEY,
+                    }
+                )
+    return records
+
+
+class FakeResolver:
+    """Minimal `core.resolver.InstrumentResolver` for strategy tests."""
+
+    def __init__(self, instrument: Instrument | None = None, step: float = 50.0) -> None:
+        self.instrument = instrument or make_instrument()
+        self.step = step
+        self.calls: list[dict] = []
+
+    def resolve(
+        self,
+        underlying_key,
+        segment,
+        *,
+        spot,
+        bullish=True,
+        expiry_rule="nearest_weekly",
+        on_date=None,
+    ) -> Instrument:
+        self.calls.append({"segment": segment, "spot": spot, "bullish": bullish})
+        if segment is Segment.STOCK:
+            return Instrument(
+                instrument_key=underlying_key,
+                tradingsymbol="RELIANCE",
+                segment=Segment.STOCK,
+                lot_size=1,
+            )
+        return self.instrument
+
+    def strike_step(self, underlying_key, expiry_rule="nearest_weekly") -> float:
+        return self.step
+
+    def lot_size(self, instrument_key: str) -> int:
+        return self.instrument.lot_size
+
+    def freeze_quantity(self, instrument_key: str) -> int | None:
+        return self.instrument.freeze_quantity

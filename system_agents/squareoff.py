@@ -56,7 +56,7 @@ class SquareOffAgent(BaseAgent):
 
     async def _loop(self) -> None:
         while True:
-            await clock.get_clock().sleep(5.0)
+            await asyncio.sleep(5.0)
             await self.tick()
 
     async def tick(self, now=None) -> None:

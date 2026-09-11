@@ -195,8 +195,9 @@ class CandleAgent(BaseAgent):
             await self._close_current()
 
     async def _close_loop(self) -> None:
+        """Cadence is real time; the decision uses the clock, so replay never spins."""
         while True:
-            await clock.get_clock().sleep(1.0)
+            await asyncio.sleep(1.0)
             await self.close_due()
 
     def _store(self, candle: Candle) -> None:

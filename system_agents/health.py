@@ -63,7 +63,7 @@ class HealthAgent(BaseAgent):
     async def _loop(self) -> None:
         cfg: HealthConfig = self.config  # type: ignore[assignment]
         while True:
-            await clock.get_clock().sleep(cfg.check_interval_seconds)
+            await asyncio.sleep(cfg.check_interval_seconds)
             await self.check()
 
     async def check(self, now: datetime | None = None) -> dict[str, Any]:
