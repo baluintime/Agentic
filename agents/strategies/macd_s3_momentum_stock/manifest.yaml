@@ -1,0 +1,5 @@
+name: macd_s3_momentum_stock
+kind: strategy
+version: 1.0.0
+requires: [macd, "segment:stock"]
+description: MACD momentum on the stock, capital sized

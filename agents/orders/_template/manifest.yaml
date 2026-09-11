@@ -1,0 +1,5 @@
+name: _template
+kind: order
+version: 0.1.0
+requires: []
+description: Template order agent - copy with tools.new_agent

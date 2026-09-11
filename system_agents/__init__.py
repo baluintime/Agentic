@@ -1,1 +1,2 @@
-"""Infrastructure agents: candles, recorder, risk, square-off, charges, health, persistence, export."""
+"""Infrastructure agents: candles, recorder, risk, square-off, charges,
+health, persistence and export."""

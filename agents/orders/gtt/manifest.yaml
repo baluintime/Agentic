@@ -1,0 +1,5 @@
+name: gtt
+kind: order
+version: 1.0.0
+requires: []
+description: Market entry plus broker-side target and stop-loss legs

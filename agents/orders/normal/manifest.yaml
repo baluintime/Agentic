@@ -1,0 +1,5 @@
+name: normal
+kind: order
+version: 1.0.0
+requires: []
+description: Market/limit order with fill confirmation

@@ -1,0 +1,5 @@
+target_points: 20
+stoploss_points: 10
+lots: 1
+on_opposite_signal: exit
+evaluate_on: close

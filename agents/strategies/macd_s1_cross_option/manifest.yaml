@@ -1,0 +1,5 @@
+name: macd_s1_cross_option
+kind: strategy
+version: 1.0.0
+requires: [macd, "segment:option"]
+description: MACD crossover, traded as an ATM option

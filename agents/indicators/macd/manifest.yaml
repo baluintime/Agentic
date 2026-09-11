@@ -1,0 +1,5 @@
+name: macd
+kind: indicator
+version: 1.0.0
+requires: []
+description: MACD line, signal line and histogram

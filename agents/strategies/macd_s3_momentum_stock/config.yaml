@@ -1,0 +1,6 @@
+capital: 100000
+target_points: 0
+stoploss_points: 0
+min_change: 0.0
+on_opposite_signal: reverse
+evaluate_on: close

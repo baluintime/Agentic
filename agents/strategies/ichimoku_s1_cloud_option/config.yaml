@@ -1,0 +1,6 @@
+target_points: 25
+stoploss_points: 12
+lots: 1
+span_reference: projected
+on_opposite_signal: exit
+evaluate_on: close

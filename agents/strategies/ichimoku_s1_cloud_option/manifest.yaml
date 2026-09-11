@@ -1,0 +1,5 @@
+name: ichimoku_s1_cloud_option
+kind: strategy
+version: 1.0.0
+requires: [ichimoku, "segment:option"]
+description: Ichimoku cloud cross, traded as an ATM option

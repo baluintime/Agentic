@@ -143,6 +143,35 @@ class OrderAgent(BaseAgent):
         stop = fill_price - sign * stop_pts if stop_pts else None
         return target, stop
 
+    # -- broker polling ------------------------------------------------------
+    async def await_fill(
+        self,
+        rest,
+        broker_order_id: str,
+        *,
+        attempts: int = 20,
+        gap_seconds: float = 0.5,
+    ) -> dict[str, Any]:
+        """Poll order details until the order reaches a terminal state.
+
+        Returns {"status", "average_price", "filled_quantity", "message"}. Polling
+        (rather than re-placing) is deliberate: an order must never be sent twice
+        because a confirmation was slow.
+        """
+        last: dict[str, Any] = {}
+        for attempt in range(attempts):
+            try:
+                last = await rest.order_details(broker_order_id) or {}
+            except Exception as exc:
+                self.log.warning("order_details failed: %s", exc)
+                last = {}
+            status = str(last.get("status", "")).lower()
+            if status in ("complete", "filled", "rejected", "cancelled", "canceled"):
+                return last
+            if attempt < attempts - 1:
+                await clock.get_clock().sleep(gap_seconds)
+        return last
+
     # -- UI / export ---------------------------------------------------------
     def status(self) -> dict[str, Any]:
         base = super().status()

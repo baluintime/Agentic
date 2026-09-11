@@ -1,0 +1,3 @@
+validity: DAY
+poll_attempts: 20
+poll_gap_seconds: 0.5

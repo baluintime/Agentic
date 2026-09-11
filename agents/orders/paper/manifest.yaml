@@ -1,0 +1,5 @@
+name: paper
+kind: order
+version: 1.0.0
+requires: []
+description: Simulated fills and target/SL legs for paper trading and replay

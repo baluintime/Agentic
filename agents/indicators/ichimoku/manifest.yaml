@@ -1,0 +1,5 @@
+name: ichimoku
+kind: indicator
+version: 1.0.0
+requires: []
+description: Ichimoku conversion, base, projected and current cloud, lagging span

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -121,11 +122,18 @@ class Registry:
 
 
 def _load_agent_class(module_path: Path, unique: str) -> type[BaseAgent] | None:
-    spec = importlib.util.spec_from_file_location(f"agents_dyn.{unique}", module_path)
+    module_name = f"agents_dyn.{unique}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         return None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Registered before exec: dataclasses and pydantic resolve types via sys.modules.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     for _, obj in inspect.getmembers(module, inspect.isclass):
         if issubclass(obj, BaseAgent) and obj.__module__ == module.__name__:
             if getattr(obj, "name", "base") != "base":

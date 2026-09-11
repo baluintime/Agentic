@@ -1,0 +1,6 @@
+target_points: 30
+stoploss_points: 15
+lots: 1
+min_change: 0.0
+on_opposite_signal: reverse
+evaluate_on: close

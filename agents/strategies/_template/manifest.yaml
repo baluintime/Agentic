@@ -1,0 +1,5 @@
+name: _template
+kind: strategy
+version: 0.1.0
+requires: []
+description: Template strategy - copy with tools.new_agent

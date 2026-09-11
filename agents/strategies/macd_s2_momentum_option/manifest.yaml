@@ -1,0 +1,5 @@
+name: macd_s2_momentum_option
+kind: strategy
+version: 1.0.0
+requires: [macd, "segment:option"]
+description: MACD momentum, traded as an ATM option
