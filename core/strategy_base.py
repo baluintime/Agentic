@@ -39,7 +39,7 @@ from core.contracts import (
 from core.pipeline import PipelineSpec
 from core.position import Direction, Position, PositionState
 from core.resolver import InstrumentResolver
-from core.trade_log import TradeLog, TradeRow
+from core.trade_log import TradeLog, build_row
 
 
 class StrategyConfig(BaseModel):
@@ -337,43 +337,24 @@ class StrategyAgent(BaseAgent):
             pos.reset()
             return
         exit_price = event.fill_price if event.fill_price is not None else (pos.ltp or 0.0)
-        sign = 1 if pos.side is Side.BUY else -1
-        quantity = pos.filled_qty or pos.quantity
-        gross = round(sign * (exit_price - pos.entry_price) * quantity, 2)
-        spec = self.spec
-        row = TradeRow(
+        row = build_row(
             pipeline_id=self.pipeline_id,
             strategy=self.name,
-            instrument=pos.instrument.label,
-            instrument_key=pos.instrument.instrument_key,
-            segment=pos.instrument.segment.value,
-            timeframe=spec.timeframe.value if spec else "",
-            product="Intraday" if (spec and spec.intraday) else "Delivery-Overnight",
-            direction=pos.direction.value if pos.direction else "",
-            entry_time=pos.entry_time,
-            exit_time=event.ts,
-            underlying_entry=pos.underlying_at_entry,
-            underlying_exit=self.underlying_ltp,
-            lot_size=pos.instrument.lot_size,
-            lots=max(1, quantity // max(1, pos.instrument.lot_size)),
-            quantity=quantity,
-            entry_price=pos.entry_price,
+            position=pos,
+            spec=self.spec,
             exit_price=exit_price,
+            exit_time=event.ts,
             exit_reason=reason,
-            gross_pnl=gross,
-            correlation_ids=[c for c in (pos.entry_correlation_id, pos.exit_correlation_id) if c],
-            broker_order_ids=list(pos.broker_order_ids),
-            mode=(spec.exec_mode.value if spec else "paper"),
-            indicator_snapshot=dict(pos.indicator_snapshot),
+            underlying_exit=self.underlying_ltp,
             session_date=clock.now().date(),
         )
         breakup = self.charges.round_trip(
             segment=pos.instrument.segment,
-            product=spec.product if spec else Product.INTRADAY,
+            product=self.spec.product if self.spec else Product.INTRADAY,
             entry_side=pos.side,
             entry_price=pos.entry_price,
             exit_price=exit_price,
-            quantity=quantity,
+            quantity=row.quantity,
         )
         row.finalise(breakup.total, breakup.to_dict())
         self.trades.add(row)

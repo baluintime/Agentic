@@ -109,10 +109,13 @@ upstox-agents/
 │   ├── settings.json           # permission rules
 │   └── skills/                 # /build-phase /new-indicator /new-strategy /new-order-agent /fix-agent /add-requirement
 ├── core/                       # stable framework; rarely edited (+ CLAUDE.md)
-│   ├── contracts.py  bus.py  base_agent.py  indicator_base.py
-│   ├── strategy_base.py  order_base.py  registry.py  clock.py
-├── broker/                     # Upstox adapters: auth, rest, websocket, instruments, paper (+ CLAUDE.md)
-├── system_agents/              # risk, squareoff, charges, health, persistence, export, recorder (+ CLAUDE.md)
+│   ├── contracts.py  bus.py  clock.py  store.py  config.py  registry.py
+│   ├── base_agent.py  indicator_base.py  strategy_base.py  order_base.py
+│   ├── pipeline.py  position.py  trade_log.py  charges.py  resolver.py
+├── broker/                     # Upstox adapters: auth, rest, ws_feed, instruments, paper (+ CLAUDE.md)
+├── system_agents/              # candles, recorder, risk, squareoff, charges, health,
+│                               # persistence, export, replay, analytics, notifications (+ CLAUDE.md)
+├── app/                        # engine (composition root) and `python -m app`
 ├── agents/
 │   ├── indicators/ {CLAUDE.md, _template/, macd/, ichimoku/}
 │   ├── strategies/ {CLAUDE.md, _template/, macd_s1_cross_option/, …}

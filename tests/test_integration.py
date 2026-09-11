@@ -21,7 +21,7 @@ from core.contracts import ExecMode, Segment, Tick, Timeframe, tick_topic
 from core.pipeline import PipelineSpec
 from core.position import PositionState
 from core.store import Store
-from tests.helpers import NIFTY_KEY, nifty_records
+from tests.helpers import NIFTY_KEY, FakeRest, nifty_records
 
 START = datetime(2026, 9, 11, 9, 15)
 
@@ -40,6 +40,7 @@ async def build_engine(tmp_path) -> Engine:
         store=store,
         instruments=InstrumentMaster.from_records(nifty_records()),
         auth=AuthManager(token_path=tmp_path / "token.json", env={}),
+        rest=FakeRest(),  # every test is offline: no broker, no network
     )
     await engine.start()
     return engine

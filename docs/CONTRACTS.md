@@ -1,29 +1,29 @@
-# Contracts and skeletons (design reference)
+# Contracts and skeletons
 
-> Once Phase 1 is built, `core/contracts.py` and `core/*_base.py` are the source of truth. If they differ from this file, the code wins; update this file in the same commit.
+> `core/contracts.py` and `core/*_base.py` are the source of truth. This file
+> describes them; if the two ever differ, the code wins and this file is updated
+> in the same commit. `CONTRACTS_VERSION` is currently `1.0.0`.
 
 ## Message contracts (`core/contracts.py`)
 
-These are the only types agents use to talk to each other. Keeping them in one small file is what lets future agents (written by Claude or by hand) communicate without reading the rest of the code.
+These are the only types agents use to talk to each other.
+
+### Enums
+
+| Enum | Values |
+|------|--------|
+| `Timeframe` | `tick`, `1m`, `5m`, `1d` (`.seconds` gives the bucket length) |
+| `Side` | `BUY`, `SELL` (`.opposite`) |
+| `Action` | `ENTER_LONG`, `ENTER_SHORT`, `EXIT`, `REVERSE` |
+| `Segment` | `option`, `future`, `stock` |
+| `Product` | `I` (intraday), `D` (delivery/overnight) |
+| `ExecMode` | `paper`, `live` |
+| `OptionType` | `CE`, `PE` |
+| `OrderStatus` | `PLACED`, `FILLED`, `PARTIAL`, `REJECTED`, `TARGET_HIT`, `SL_HIT`, `CANCELLED`, `SQUARED_OFF` |
+
+### Dataclasses
 
 ```python
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
-from typing import Any
-
-class Timeframe(str, Enum):
-    TICK = "tick"; M1 = "1m"; M5 = "5m"; D1 = "1d"
-
-class Side(str, Enum):
-    BUY = "BUY"; SELL = "SELL"
-
-class Action(str, Enum):
-    ENTER_LONG = "ENTER_LONG"    # buy CE / buy stock / buy future
-    ENTER_SHORT = "ENTER_SHORT"  # buy PE / short stock / sell future
-    EXIT = "EXIT"
-    REVERSE = "REVERSE"
-
 @dataclass(frozen=True)
 class Tick:
     instrument_key: str
@@ -32,14 +32,19 @@ class Tick:
     cum_volume: int | None = None
     oi: float | None = None
 
+
 @dataclass(frozen=True)
 class Candle:
     instrument_key: str
     timeframe: Timeframe
     start: datetime
-    open: float; high: float; low: float; close: float
+    open: float
+    high: float
+    low: float
+    close: float
     volume: int = 0
     is_closed: bool = False
+
 
 @dataclass(frozen=True)
 class IndicatorResult:
@@ -48,8 +53,9 @@ class IndicatorResult:
     timeframe: Timeframe
     candle: Candle
     prev_candle: Candle
-    values: dict[str, float]       # e.g. {"macd": .., "signal": .., "histogram": ..}
-    prev_values: dict[str, float]
+    values: dict[str, float]  # outputs + open/high/low/close
+    prev_values: dict[str, float]  # the same keys, one bar back
+
 
 @dataclass(frozen=True)
 class Signal:
@@ -59,6 +65,7 @@ class Signal:
     reason: str
     ts: datetime
 
+
 @dataclass(frozen=True)
 class OrderRequest:
     correlation_id: str
@@ -67,65 +74,104 @@ class OrderRequest:
     instrument_key: str
     side: Side
     quantity: int
-    product: str                   # "I" intraday, "D" delivery
+    product: str = "I"
     order_type: str = "MARKET"
     target_points: float | None = None
     stoploss_points: float | None = None
-    meta: dict[str, Any] = field(default_factory=dict)
+    meta: dict[str, Any] = {}  # order_agent, exec_mode, segment, purpose,
+    # lot_size, freeze_quantity, target_mode, target_value, ...
+
 
 @dataclass(frozen=True)
 class OrderEvent:
     correlation_id: str
     origin_agent_id: str
-    status: str                    # PLACED | FILLED | PARTIAL | REJECTED | TARGET_HIT | SL_HIT | CANCELLED | SQUARED_OFF
+    status: str
     fill_price: float | None
     filled_qty: int
     broker_order_id: str | None
     ts: datetime
     message: str = ""
+    meta: dict[str, Any] = {}
+
+
+@dataclass(frozen=True)
+class Instrument:  # produced by the Instrument Master
+    instrument_key: str
+    tradingsymbol: str
+    segment: Segment
+    lot_size: int = 1
+    tick_size: float = 0.05
+    freeze_quantity: int | None = None
+    expiry: datetime | None = None
+    strike: float | None = None
+    option_type: OptionType | None = None
+    underlying_key: str | None = None
+
+
+@dataclass(frozen=True)
+class SystemEvent:  # anything on a `system.*` topic
+    kind: str
+    ts: datetime
+    message: str = ""
+    payload: dict[str, Any] = {}
 ```
 
-**Bus topics:** `tick.<instrument>`, `candle.<tf>.<instrument>`, `indicator.<pipeline>`, `signal.<pipeline>`, `order.request`, `order.event.<origin_agent>`, `system.*` (square-off, kill switch, health, token).
+An `IndicatorResult` is published only when every value **and** every previous
+value is a real number, so a strategy never compares against a NaN.
+
+## Bus topics
+
+| Topic | Carries | Published by |
+|-------|---------|--------------|
+| `tick.<instrument>` | `Tick` | Market Data Hub, Replay agent |
+| `candle.<tf>.<instrument>` | `Candle` (updates and one closed event) | Candle agents |
+| `indicator.<pipeline>` | `IndicatorResult` | Indicator agents |
+| `signal.<pipeline>` | `Signal` | Strategy agents |
+| `order.request` | `OrderRequest` | Strategy agents |
+| `order.approved` | `OrderRequest` | **Risk Agent only** |
+| `order.event.<origin_agent>` | `OrderEvent` | Order agents, Risk Agent (rejections) |
+| `system.<kind>` | `SystemEvent` | Square-off, risk, health, feed, session |
+
+The Risk Agent is the only bridge from `order.request` to `order.approved`, which
+is what makes it impossible for a strategy to reach an order agent unchecked.
+Order agents handle a request only when `meta["order_agent"]` names them.
+
+System kinds in use: `squareoff.no_new_entries`, `squareoff.cancel_gtt`,
+`squareoff.start`, `squareoff.done`, `kill`, `risk.block`, `health.*`,
+`feed.disconnected`, `session.new_day`.
+
+Wildcards: `*` matches one segment, and a trailing `*` matches the rest — so
+`candle.5m.*` matches one instrument and `system.*` matches `system.squareoff.done`.
 
 ## Agent skeletons
 
 ### Base agent (`core/base_agent.py`)
 
 ```python
-from abc import ABC
-from typing import ClassVar
-import pandas as pd
-from pydantic import BaseModel
-
 class BaseAgent(ABC):
-    kind: ClassVar[str]                  # "indicator" | "strategy" | "order" | "data" | "system"
-    name: ClassVar[str]                  # unique registry name, e.g. "macd"
-    Config: ClassVar[type[BaseModel]]    # parameter schema -> auto-generates the UI form
-    requires: ClassVar[list[str]] = []   # e.g. ["macd"] or ["segment:option"]
+    kind: ClassVar[str]  # "indicator" | "strategy" | "order" | "data" | "system"
+    name: ClassVar[str]  # unique registry name, e.g. "macd"
+    Config: ClassVar[type[BaseModel]]  # parameter schema -> auto-generates the UI form
+    requires: ClassVar[list[str]] = []  # e.g. ["macd"] or ["segment:option"]
 
-    def __init__(self, agent_id: str, config: BaseModel, bus, store):
-        self.agent_id, self.config, self.bus, self.store = agent_id, config, bus, store
-
+    def __init__(self, agent_id, config=None, bus=None, store=None, pipeline_id=""): ...
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
-    def status(self) -> dict: return {}                         # shown in the UI widget
-    def export_frames(self) -> dict[str, pd.DataFrame]: return {}
+    def listen(self, pattern, handler): ...  # auto-unsubscribed on stop
+    async def emit(self, topic, message): ...
+    def status(self) -> dict: ...  # shown in the UI widget
+    def export_frames(self) -> dict[str, pd.DataFrame]: ...
 ```
 
-The `Config` pydantic model does double duty: it validates parameters and the UI generates the widget form from it, so a new agent gets its UI for free.
+### Indicator (`core/indicator_base.py`)
 
-### Indicator skeleton (`agents/indicators/_template/agent.py`)
+Author writes `warmup_bars()` and a pure `compute(df) -> df`; the base class
+subscribes to the candle agent, evaluates on closed candles (or every tick when
+`evaluate_on="every_tick"`), attaches previous values, publishes and exports.
+`seed(history)` loads the morning history.
 
 ```python
-import pandas as pd
-from pydantic import BaseModel
-from core.indicator_base import IndicatorAgent
-
-class Config(BaseModel):
-    fast: int = 12
-    slow: int = 26
-    signal: int = 9
-
 class MacdAgent(IndicatorAgent):
     name = "macd"
     Config = Config
@@ -135,7 +181,6 @@ class MacdAgent(IndicatorAgent):
         return 3 * self.config.slow + self.config.signal
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Pure function: receives OHLCV candles, returns df with output columns added."""
         fast = df["close"].ewm(span=self.config.fast, adjust=False).mean()
         slow = df["close"].ewm(span=self.config.slow, adjust=False).mean()
         df["macd"] = fast - slow
@@ -144,63 +189,59 @@ class MacdAgent(IndicatorAgent):
         return df
 ```
 
-The `IndicatorAgent` base class does everything else: subscribes to the attached candle agent, calls `compute` on each closed candle, builds `IndicatorResult` with current and previous values, publishes it, and exports.
+### Strategy (`core/strategy_base.py`)
 
-### Strategy skeleton (`agents/strategies/_template/agent.py`)
+Author writes only `decide(result, pos) -> Action | None`. `StrategyConfig`
+supplies `target_points`, `stoploss_points`, `target_mode`, `lots`, `capital`,
+`on_opposite_signal` and `evaluate_on`; subclasses add their own fields.
 
 ```python
-from pydantic import BaseModel
-from core.contracts import Action, IndicatorResult
-from core.strategy_base import StrategyAgent, Position
-
-class Config(BaseModel):
-    target_points: float = 20
-    stoploss_points: float = 10
-    lots: int = 1
-    on_opposite_signal: str = "exit"    # exit | reverse | ignore
-
 class MacdCrossOption(StrategyAgent):
     name = "macd_s1_cross_option"
     Config = Config
     requires = ["macd", "segment:option"]
 
     def decide(self, r: IndicatorResult, pos: Position) -> Action | None:
-        """Only the trading rule lives here. Sizing, ATM resolution, risk, orders,
-        logging, P&L and square-off are handled by StrategyAgent."""
         m, s = r.values["macd"], r.values["signal"]
         pm, ps = r.prev_values["macd"], r.prev_values["signal"]
         if pm <= ps and m > s:
-            return Action.ENTER_LONG      # base class maps to ATM CE for options
+            return Action.ENTER_LONG  # base class maps to ATM CE for options
         if pm >= ps and m < s:
-            return Action.ENTER_SHORT     # base class maps to ATM PE for options
+            return Action.ENTER_SHORT  # base class maps to ATM PE for options
         return None
 ```
 
-### Order agent skeleton (`agents/orders/_template/agent.py`)
+The base class does instrument resolution, sizing, order routing through Risk,
+the `FLAT → ENTERING → OPEN → EXITING → FLAT` state machine, one decision per
+candle, `on_opposite_signal`, the trade log, charges, P&L, pause/kill/square-off.
+
+### Order agent (`core/order_base.py`)
 
 ```python
-from core.contracts import OrderRequest, OrderEvent
-from core.order_base import OrderAgent
-
 class NormalOrderAgent(OrderAgent):
     name = "normal"
+    live_only = True  # refuses unless the pipeline is armed LIVE
 
-    async def place(self, req: OrderRequest) -> OrderEvent:
-        """Send to broker adapter, wait for fill, return FILLED/REJECTED event.
-        The base class routes the event to req.origin_agent_id."""
-        ...
+    async def place(self, req: OrderRequest) -> OrderEvent: ...
 ```
+
+The base class subscribes to `order.approved`, applies the guards, routes every
+event to `order.event.<origin_agent_id>`, and provides `tag()` (correlation id
+for the broker order tag), `slices()` (freeze-quantity splitting),
+`resolve_targets()` (absolute target/SL from the actual fill) and `await_fill()`
+(polling, never re-placing).
 
 ### Agent folder convention
 
 ```
 agents/strategies/macd_s1_cross_option/
     agent.py          # the agent class (target < 200 lines)
-    manifest.yaml     # name, kind, version, requires, short description
+    manifest.yaml     # name, kind, version, requires, description
     config.yaml       # default parameters
     test_agent.py     # tests using fixture candles, no network
     README.md         # 10–20 lines: what it does, rules, parameters
 ```
 
-Agents are discovered automatically by scanning `agents/*/*/manifest.yaml`, so adding a folder is enough to make a new agent appear in the UI.
-
+Agents are discovered by scanning `agents/*/*/manifest.yaml`, so adding a folder
+is enough to make a new agent appear in the UI. Folders starting with `_` (the
+templates) are skipped.

@@ -58,3 +58,18 @@
 
 Append one line per decision: `YYYY-MM-DD — decision — reason`.
 
+2026-09-11 — Added `order.approved` to the bus topics — the Risk Agent must sit between the strategy and the order agents, so it consumes `order.request` and republishes approved requests; order agents subscribe to `order.approved` only.
+2026-09-11 — `OrderEvent` gained a `meta` dict — GTT ids, order-id lists and slice sizes have to reach the origin agent without widening the fixed fields.
+2026-09-11 — Broker-side target/SL legs report on the **entry** correlation id — a GTT leg is not a separate strategy order, and routing it to the entry keeps one round trip to one id.
+2026-09-11 — Target and stop-loss are computed from the actual fill price, in the order agent — points are meaningless until the fill is known, and percent mode would otherwise be applied to the wrong base. The request carries `target_mode`/`target_value` in `meta` for this.
+2026-09-11 — `on_opposite_signal: reverse` waits for the exit fill before entering the other side — entering immediately overwrote a position that was still closing, losing the round trip.
+2026-09-11 — An `IndicatorResult` is published only when the current **and** previous values are all real numbers — a NaN previous value makes every "crossed above" comparison silently False.
+2026-09-11 — Ichimoku publishes `chikou` (today's close) and `chikou_reference` (the close 26 bars ago) instead of a forward-shifted lagging span — a forward shift would be look-ahead.
+2026-09-11 — 5-minute candles are aggregated from **closed** 1-minute candles, not from ticks directly — one back-fill of the 1-minute series then repairs both timeframes.
+2026-09-11 — Timer loops (candle close, square-off, health) sleep on real time and take their decisions from `core.clock` — sleeping on a `SimClock` would spin the loop during replay.
+2026-09-11 — `config/charges.yaml` is shipped empty; the calculator reports `complete: false` and zero — inventing statutory rates would put plausible but wrong numbers in the trade log.
+2026-09-11 — The v3 market-data feed's protobuf decoder is not included: `UpstoxFeedClient` takes a `decode` callable — the schema must be generated from Upstox's published proto, and guessing it would produce silently wrong ticks. Everything above the transport is tested against normalised fixtures.
+2026-09-11 — Upstox endpoint paths live in one `Endpoints` dataclass in `broker/rest.py` — the docs site is not reachable from the build environment, so a doc change is a one-line edit rather than a hunt.
+2026-09-11 — Tests block real sockets (`tests/conftest.py`) and redirect `UPSTOX_RUNTIME_DIR` — "tests are offline" is enforced rather than assumed.
+2026-09-11 — Live arming also requires the paper-first promotion rule to pass — the Analytics agent counts distinct paper sessions per strategy.
+

@@ -165,6 +165,15 @@ class FakeRest:
     async def profile(self) -> dict:
         return {"user_name": "Test User", "user_id": "T1", "email": "t@example.com"}
 
+    async def historical_candles(self, key, unit, interval, to_date, from_date) -> list:
+        return []
+
+    async def intraday_candles(self, key, unit="minutes", interval=1) -> list:
+        return []
+
+    async def feed_authorize(self) -> str:
+        return ""
+
 
 def fill(status: str = "complete", quantity: int = 75, price: float = 100.0, **extra) -> dict:
     return {

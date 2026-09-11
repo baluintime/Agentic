@@ -1,0 +1,13 @@
+{
+  "status": "success",
+  "data": {
+    "order_id": "240911010101010",
+    "status": "complete",
+    "filled_quantity": 75,
+    "average_price": 104.25,
+    "tag": "a1b2c3d4e5f60718",
+    "instrument_token": "NSE_FO|44675",
+    "transaction_type": "BUY",
+    "product": "I"
+  }
+}

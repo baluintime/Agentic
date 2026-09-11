@@ -2,13 +2,44 @@
 
 An offline, multi-agent trading platform for Upstox: pick an instrument → timeframe → indicator → strategy → order agent from a Python web console, trade in paper or live mode, and export everything with one click. Agents are deterministic Python and use no AI tokens at runtime. Claude Code is used only to build and change agents.
 
-## Getting started with Claude Code
+## Getting started
 
-1. Put this folder in a new Git repository: `git init && git add . && git commit -m "chore: project spec and Claude Code setup"`, then push it to GitHub.
-2. Copy `.env.example` to `.env` and fill in your Upstox API key, secret and redirect URI. Create the runtime folder: `mkdir -p ~/upstox_runtime`.
-3. Open a terminal in the repo and start Claude Code with `claude`. It loads `CLAUDE.md` automatically. You do not need to run `/init`.
-4. Type `/build-phase 1`. Claude will propose a plan; approve it and let it build. Repeat for later phases.
-5. Before Phase 3, fill in `config/charges.yaml` with current rates. Before Phase 5, confirm SEBI/Upstox retail algo requirements (for example static IP registration).
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env          # then fill in your Upstox API key, secret and redirect URI
+mkdir -p ~/upstox_runtime     # ticks, candles, SQLite, exports and the token live here
+pytest -q                     # 271 offline tests: no network, no broker
+python -m app                 # the console on http://localhost:8080
+```
+
+The console opens on the pipelines page. Log in to Upstox from the header, add a
+pipeline with the stepper (instrument → segment → product → timeframe →
+indicator → strategy → order agent → parameters → Paper/Live), and watch the
+agent widgets. Paper mode needs no arming and routes every order to the Paper
+Order Agent.
+
+**Before you trade real money**
+
+1. Fill in `config/charges.yaml` with the current rates from Upstox's charges page.
+   It ships empty on purpose: until it is filled the trade log reports charges of
+   zero and the widget says `configured: false`.
+2. Confirm the current SEBI/Upstox retail algo requirements for your account
+   (static IP registration, order-rate thresholds, algo tagging) and set
+   `max_orders_per_second` in `config/risk.yaml` accordingly.
+3. Verify the GTT leg combinations in `agents/orders/gtt/agent.py` against the
+   current Upstox GTT documentation.
+4. Generate the market-feed protobuf decoder from Upstox's published proto and
+   pass it to `UpstoxFeedClient(rest, decode=...)`; without it the feed yields
+   only JSON frames.
+5. Run several paper sessions. Live arming is refused until the Analytics agent
+   has counted enough of them (`min_paper_sessions`).
+
+## Working on it with Claude Code
+
+Start Claude Code with `claude` in the repo; it loads `CLAUDE.md` automatically.
+`/build-phase <n>` works through `docs/ROADMAP.md`, and `/new-strategy`,
+`/new-indicator`, `/new-order-agent` and `/fix-agent` cover the day-to-day work.
 
 ## How the files are organised for low token use
 

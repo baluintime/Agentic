@@ -28,12 +28,15 @@ from core.pipeline import PipelineSpec
 from core.registry import Registry, get_registry
 from core.store import Store
 from core.strategy_base import StrategyAgent
+from system_agents.analytics import AnalyticsAgent
 from system_agents.candles import CandleAgent
 from system_agents.charges import ChargesAgent
 from system_agents.export import ExportAgent
 from system_agents.health import HealthAgent
+from system_agents.notifications import NotificationAgent
 from system_agents.persistence import PersistenceAgent
 from system_agents.recorder import RecorderAgent
+from system_agents.replay import ReplayAgent
 from system_agents.risk import RiskAgent, RiskConfig
 from system_agents.squareoff import SquareOffAgent, SquareOffConfig
 
@@ -109,6 +112,9 @@ class Engine:
         self.persistence = PersistenceAgent(
             "persistence", None, self.bus, self.store, rest=self.rest
         )
+        self.analytics = AnalyticsAgent("analytics", None, self.bus, self.store)
+        self.notifications = NotificationAgent("notifications", None, self.bus, self.store)
+        self.replay = ReplayAgent("replay", None, self.bus, self.store)
         self.export = ExportAgent("export", None, self.bus, self.store, agents=self.all_agents)
 
     # -- lifecycle -----------------------------------------------------------
@@ -122,6 +128,8 @@ class Engine:
             self.recorder,
             self.charges_agent,
             self.persistence,
+            self.analytics,
+            self.notifications,
             self.export,
         ]
 
@@ -331,6 +339,12 @@ class Engine:
             return False, "risk agent is disabled"
         if not self.persistence.passed:
             return False, "broker reconciliation has not passed"
+        for pipeline in self.pipelines.values():
+            if not pipeline.spec.live:
+                continue
+            unlocked, reason = self.analytics.live_unlocked(pipeline.spec.strategy)
+            if not unlocked:
+                return False, f"{pipeline.spec.strategy}: {reason}"
         self.armed_live = True
         for agent in self.order_agents.values():
             agent.armed_live = True  # type: ignore[attr-defined]

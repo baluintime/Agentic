@@ -9,7 +9,7 @@ All agents are deterministic Python: **no LLM/AI calls at runtime**. The only ru
 | What to build next / current status | `docs/ROADMAP.md` |
 | Big picture, agent catalogue, UI, repo layout | `docs/ARCHITECTURE.md` |
 | Behaviour of one agent | `docs/REQUIREMENTS.md` — jump to that agent's `###` heading only |
-| Message types, base classes, skeletons | `core/contracts.py` + `core/*_base.py` (fallback before Phase 1: `docs/CONTRACTS.md`) |
+| Message types, base classes, skeletons | `core/contracts.py` + `core/*_base.py` (described in `docs/CONTRACTS.md`) |
 | Known pitfalls, open questions | `docs/DECISIONS.md` |
 | Rules for a folder | that folder's `CLAUDE.md` |
 

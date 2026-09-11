@@ -13,13 +13,13 @@ fallback the docs describe — market entry followed by a two-leg GTT.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agents.orders.gtt.legs import OpenGtt, entry_payload, first, gtt_payload, leg_status
 from core import clock
-from core.contracts import OrderEvent, OrderRequest, OrderStatus, Side
+from core.contracts import OrderEvent, OrderRequest, OrderStatus
 from core.order_base import OrderAgent
 
 
@@ -30,19 +30,6 @@ class Config(BaseModel):
     cancel_sibling_leg: bool = Field(
         True, description="Cancel the other leg when one triggers, if the broker does not"
     )
-
-
-@dataclass
-class OpenGtt:
-    correlation_id: str
-    origin_agent_id: str
-    gtt_order_id: str
-    instrument_key: str
-    side: Side
-    quantity: int
-    entry_price: float
-    target_price: float | None
-    stoploss_price: float | None
 
 
 class GttOrderAgent(OrderAgent):
@@ -88,7 +75,7 @@ class GttOrderAgent(OrderAgent):
                 broker_order_id=entry.broker_order_id,
                 message=f"entry filled but GTT legs failed: {exc}",
             )
-        gtt_id = str(_first(response, "gtt_order_id", "order_id") or "")
+        gtt_id = str(first(response, "gtt_order_id", "order_id") or "")
         self.open_gtts[req.correlation_id] = OpenGtt(
             correlation_id=req.correlation_id,
             origin_agent_id=req.origin_agent_id,
@@ -120,7 +107,7 @@ class GttOrderAgent(OrderAgent):
             except Exception as exc:
                 errors.append(str(exc))
                 break
-            order_id = str(_first(response, "order_id") or "")
+            order_id = str(first(response, "order_id") or "")
             if not order_id:
                 errors.append("no order id returned")
                 break
@@ -155,51 +142,12 @@ class GttOrderAgent(OrderAgent):
 
     # -- payloads ------------------------------------------------------------
     def entry_payload(self, req: OrderRequest, quantity: int) -> dict[str, Any]:
-        return {
-            "quantity": quantity,
-            "product": req.product,
-            "validity": self.config.validity,
-            "price": 0,
-            "tag": self.tag(req.correlation_id),
-            "instrument_token": req.instrument_key,
-            "order_type": "MARKET",
-            "transaction_type": req.side.value,
-            "disclosed_quantity": 0,
-            "trigger_price": 0,
-            "is_amo": False,
-            "slice": False,
-        }
+        return entry_payload(req, quantity, self.tag(req.correlation_id), self.config.validity)
 
     def gtt_payload(
         self, req: OrderRequest, quantity: int, target: float | None, stop: float | None
     ) -> dict[str, Any]:
-        exit_side = req.side.opposite.value
-        rules = []
-        if target is not None:
-            rules.append(
-                {
-                    "strategy": "ENTRY",
-                    "trigger_type": "ABOVE" if req.side is Side.BUY else "BELOW",
-                    "trigger_price": round(target, 2),
-                }
-            )
-        if stop is not None:
-            rules.append(
-                {
-                    "strategy": "STOPLOSS",
-                    "trigger_type": "IMMEDIATE",
-                    "trigger_price": round(stop, 2),
-                }
-            )
-        return {
-            "type": "MULTIPLE" if len(rules) > 1 else "SINGLE",
-            "quantity": quantity,
-            "product": req.product,
-            "instrument_token": req.instrument_key,
-            "transaction_type": exit_side,
-            "tag": self.tag(req.correlation_id),
-            "rules": rules,
-        }
+        return gtt_payload(req, quantity, target, stop, self.tag(req.correlation_id))
 
     # -- broker updates ------------------------------------------------------
     async def on_broker_update(self, update: dict[str, Any]) -> None:
@@ -208,7 +156,7 @@ class GttOrderAgent(OrderAgent):
         gtt = next((g for g in self.open_gtts.values() if self.tag(g.correlation_id) == tag), None)
         if gtt is None:
             return
-        status = _leg_status(update, gtt)
+        status = leg_status(update, gtt)
         if status is None:
             return
         self.open_gtts.pop(gtt.correlation_id, None)
@@ -232,19 +180,16 @@ class GttOrderAgent(OrderAgent):
         )
 
     async def _cancel_for_origin(self, origin_agent_id: str) -> None:
-        for correlation_id, gtt in list(self.open_gtts.items()):
-            if gtt.origin_agent_id != origin_agent_id:
-                continue
-            self.open_gtts.pop(correlation_id, None)
-            if self.rest and gtt.gtt_order_id:
-                try:
-                    await self.rest.cancel_gtt(gtt.gtt_order_id)
-                except Exception as exc:
-                    self.log.info("GTT cancel failed: %s", exc)
+        await self._cancel(lambda gtt: gtt.origin_agent_id == origin_agent_id)
 
     async def _on_cancel_all(self, _event: Any) -> None:
-        """Square-off cancels open GTTs before positions are exited."""
+        """Square-off and the kill switch cancel open GTTs before positions are exited."""
+        await self._cancel(lambda _gtt: True)
+
+    async def _cancel(self, matches) -> None:
         for correlation_id, gtt in list(self.open_gtts.items()):
+            if not matches(gtt):
+                continue
             self.open_gtts.pop(correlation_id, None)
             if self.rest and gtt.gtt_order_id:
                 try:
@@ -256,37 +201,3 @@ class GttOrderAgent(OrderAgent):
         base = super().status()
         base.update({"open_gtts": len(self.open_gtts)})
         return base
-
-
-def _leg_status(update: dict[str, Any], gtt: OpenGtt) -> str | None:
-    raw = str(update.get("status", "")).lower()
-    if raw in ("cancelled", "canceled"):
-        return OrderStatus.CANCELLED.value
-    if raw not in ("complete", "filled", "triggered"):
-        return None
-    leg = str(update.get("rule") or update.get("strategy") or "").upper()
-    if leg == "STOPLOSS":
-        return OrderStatus.SL_HIT.value
-    if leg in ("ENTRY", "TARGET"):
-        return OrderStatus.TARGET_HIT.value
-    price = float(update.get("average_price") or 0)
-    if gtt.stoploss_price is not None and gtt.target_price is not None and price:
-        target_gap = abs(price - gtt.target_price)
-        stop_gap = abs(price - gtt.stoploss_price)
-        return OrderStatus.SL_HIT.value if stop_gap < target_gap else OrderStatus.TARGET_HIT.value
-    return (
-        OrderStatus.TARGET_HIT.value if gtt.target_price is not None else OrderStatus.SL_HIT.value
-    )
-
-
-def _first(response: Any, *keys: str) -> Any:
-    if not isinstance(response, dict):
-        return None
-    for key in keys:
-        value = response.get(key)
-        if isinstance(value, list) and value:
-            return value[0]
-        if value:
-            return value
-    data = response.get("data")
-    return _first(data, *keys) if isinstance(data, dict) else None
