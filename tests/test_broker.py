@@ -522,9 +522,104 @@ async def test_the_hub_keeps_a_price_book_for_the_console() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_feed_client_refuses_to_connect_without_a_token() -> None:
-    from broker.ws_feed import UpstoxFeedClient
+async def test_every_reconnect_closes_the_previous_socket() -> None:
+    """A leaked connection per retry hits the broker's connection cap as 403."""
 
-    client = UpstoxFeedClient(UpstoxRest(access_token=None))
-    with pytest.raises(ConnectionError, match="log in"):
+    class Flaky:
+        def __init__(self) -> None:
+            self.connects = self.closes = 0
+
+        async def connect(self) -> None:
+            self.connects += 1
+
+        async def subscribe(self, keys) -> None: ...
+
+        async def unsubscribe(self, keys) -> None: ...
+
+        async def messages(self):
+            raise ConnectionError("dropped")
+            yield  # pragma: no cover
+
+        async def close(self) -> None:
+            self.closes += 1
+
+    client = Flaky()
+    hub = MarketDataHub("hub", None, EventBus(), client=client)
+    hub.base_backoff = hub.max_backoff = 0.01
+    await hub.start()
+    await asyncio.sleep(0.12)
+    await hub.stop()
+    assert client.connects >= 2, "expected the hub to retry"
+    assert client.closes >= client.connects - 1  # nothing is left open behind us
+
+
+@pytest.mark.asyncio
+async def test_a_fatal_feed_error_stops_retrying() -> None:
+    from broker.ws_feed import FeedUnavailable
+
+    class Broken:
+        def __init__(self) -> None:
+            self.connects = 0
+
+        async def connect(self) -> None:
+            self.connects += 1
+            raise FeedUnavailable("the market feed decoder is missing")
+
+        async def subscribe(self, keys) -> None: ...
+
+        async def unsubscribe(self, keys) -> None: ...
+
+        async def messages(self):
+            yield {}  # pragma: no cover
+
+        async def close(self) -> None: ...
+
+    bus = EventBus()
+    await bus.start()
+    events = Collector(bus, "system.feed.unavailable")
+    client = Broken()
+    hub = MarketDataHub("hub", None, bus, client=client)
+    await hub.start()
+    await asyncio.sleep(0.1)
+    assert client.connects == 1  # retrying cannot install a package
+    assert "decoder is missing" in hub.fatal_error
+    assert hub.status()["error"] == hub.fatal_error
+    await bus.drain()
+    assert events.messages
+    await hub.stop()
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_clears_a_fatal_stop() -> None:
+    hub = MarketDataHub("hub", None, EventBus(), client=FakeFeed([]))
+    hub.fatal_error = "was broken"
+    await hub.restart()
+    assert hub.fatal_error == ""
+    await hub.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_token_is_fatal_not_a_retry_loop() -> None:
+    from broker.ws_feed import FeedUnavailable, UpstoxFeedClient
+
+    client = UpstoxFeedClient(UpstoxRest(access_token=None), decode=lambda b: {})
+    with pytest.raises(FeedUnavailable, match="log in"):
         await client.connect()
+
+
+def test_the_decoder_names_the_fix_when_the_sdk_is_absent(monkeypatch) -> None:
+    import builtins
+
+    from broker.ws_feed import FeedUnavailable, _protobuf
+
+    real_import = builtins.__import__
+
+    def missing(name, *args, **kwargs):
+        if name.startswith("upstox_client"):
+            raise ImportError("No module named 'upstox_client'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing)
+    with pytest.raises(FeedUnavailable, match=r"pip install -e"):
+        _protobuf()

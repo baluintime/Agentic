@@ -224,6 +224,8 @@ class PricesCard:
         return leading + [k for k in keys if k not in leading]
 
     def _note(self, hub, connected: bool) -> str:
+        if hub.fatal_error:
+            return hub.fatal_error
         if not hub.subscriptions:
             return "nothing subscribed — add a pipeline"
         if hub.client is None:

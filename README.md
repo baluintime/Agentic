@@ -49,9 +49,14 @@ If it says `feed down` or `no tick yet`, check in this order:
 | Symptom | Cause |
 |---------|-------|
 | `no feed attached — log in to Upstox` | No valid token yet; the feed needs one. |
+| `the market feed decoder is missing` | Dependencies are out of date: `pip install -e ".[dev]"`. |
 | `connecting…` with rising reconnects | Token rejected, or no network to `api.upstox.com`. |
+| Repeated `HTTP 403` on connect | Upstox caps concurrent feed connections. Stop the app, wait a minute for the broker to release them, start again. |
 | `connected, waiting for the first tick` | The market is closed, or nothing has traded yet. |
 | Prices move, `market-data → ticks` rises | Working. Indicator `evaluations` climbs once candles close. |
+
+Upgrading? Run `pip install -e ".[dev]"` after every pull — the feed decoder
+arrived as a new dependency and the console cannot receive prices without it.
 
 The `market-data` widget carries the same facts in detail: `connected`,
 `subscriptions`, `ticks`, `reconnects` and the last tick's timestamp.

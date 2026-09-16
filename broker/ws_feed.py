@@ -23,6 +23,10 @@ from core.contracts import Tick, system_topic, tick_topic
 from core.rest_urls import MARKET_FEED_WS
 
 
+class FeedUnavailable(RuntimeError):
+    """The feed cannot work until something is fixed by hand — do not retry."""
+
+
 class FeedClient(Protocol):
     """What the hub needs from a feed transport (real or fake)."""
 
@@ -52,6 +56,8 @@ class MarketDataHub(BaseAgent):
         self.ticks = 0
         self.reconnects = 0
         self.connected = False
+        self.fatal_error = ""
+        self.base_backoff = 1.0
         self.max_backoff = 60.0
         self._task: asyncio.Task | None = None
         self._stopping = False
@@ -60,7 +66,13 @@ class MarketDataHub(BaseAgent):
     async def start(self) -> None:
         await super().start()
         self._stopping = False
+        self.fatal_error = ""
         self._task = asyncio.create_task(self._run(), name="market-data-hub")
+
+    async def restart(self) -> None:
+        """Retry after a fatal stop, once whatever caused it has been fixed."""
+        await self.stop()
+        await self.start()
 
     async def stop(self) -> None:
         self._stopping = True
@@ -108,7 +120,7 @@ class MarketDataHub(BaseAgent):
 
     # -- connection loop -----------------------------------------------------
     async def _run(self) -> None:
-        backoff = 1.0
+        backoff = self.base_backoff
         while not self._stopping:
             if self.client is None:
                 await asyncio.sleep(0.5)
@@ -116,7 +128,7 @@ class MarketDataHub(BaseAgent):
             try:
                 await self.client.connect()
                 self.connected = True
-                backoff = 1.0
+                backoff = self.base_backoff
                 if self.subscriptions:
                     await self.client.subscribe(self.subscriptions)
                 async for message in self.client.messages():
@@ -124,6 +136,16 @@ class MarketDataHub(BaseAgent):
                 raise ConnectionError("feed stream ended")
             except asyncio.CancelledError:
                 raise
+            except FeedUnavailable as exc:
+                # Retrying cannot install a package or mint a token: stop and say so.
+                self.connected = False
+                self.fatal_error = str(exc)
+                self.fail(f"feed unavailable: {exc}")
+                await self.emit(
+                    system_topic("feed.unavailable"),
+                    _system("feed.unavailable", str(exc), {}),
+                )
+                return
             except Exception as exc:
                 self.connected = False
                 if self._stopping:
@@ -136,6 +158,13 @@ class MarketDataHub(BaseAgent):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(self.max_backoff, backoff * 2)
+            finally:
+                # Always hand the socket back. Without this every retry leaked a
+                # live connection, and the broker's connection cap then answered
+                # 403 to every further attempt.
+                self.connected = False
+                with contextlib.suppress(Exception):
+                    await self.client.close()
 
     async def _handle(self, message: dict[str, Any]) -> None:
         for tick in ticks_from(message):
@@ -157,6 +186,7 @@ class MarketDataHub(BaseAgent):
                 "subscriptions": len(self.refs),
                 "ticks": self.ticks,
                 "reconnects": self.reconnects,
+                "error": self.fatal_error,
                 "last_tick_at": self.last_tick_at.isoformat() if self.last_tick_at else None,
             }
         )
@@ -199,15 +229,25 @@ def decode_feed(frame: bytes) -> dict[str, Any]:
     hand-written guess, so a change on Upstox's side is a dependency bump.
     Docs: https://upstox.com/developer/api-documentation/v3/market-data-feed/
     """
-    from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as pb
-
-    response = pb.FeedResponse.FromString(frame)
+    response = _protobuf().FeedResponse.FromString(frame)
     feeds: dict[str, dict[str, Any]] = {}
     for key, feed in response.feeds.items():
         payload = _feed_payload(feed)
         if payload is not None:
             feeds[key] = payload
     return {"feeds": feeds}
+
+
+def _protobuf() -> Any:
+    """The generated v3 schema, or a message saying exactly how to get it."""
+    try:
+        from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as pb
+    except ImportError as exc:  # noqa: F841
+        raise FeedUnavailable(
+            'the market feed decoder is missing — run: pip install -e ".[dev]" '
+            "(it installs upstox-python-sdk, which ships the v3 protobuf schema)"
+        ) from exc
+    return pb
 
 
 def _feed_payload(feed: Any) -> dict[str, Any] | None:
@@ -262,8 +302,10 @@ class UpstoxFeedClient:
     async def connect(self) -> None:
         import websockets  # imported lazily so tests never need the dependency
 
+        if self.decode is decode_feed:
+            _protobuf()  # fail before opening a socket, not after the first frame
         if not getattr(self.rest, "access_token", None):
-            raise ConnectionError("no access token — log in to Upstox first")
+            raise FeedUnavailable("no access token — log in to Upstox first")
         self._ws = await websockets.connect(
             self.url,
             additional_headers={"Authorization": f"Bearer {self.rest.access_token}"},
