@@ -17,6 +17,9 @@ dependencies = [
     "httpx>=0.26",
     "websockets>=12",
     "openpyxl>=3.1",
+    # Ships the generated protobuf module for the v3 market-data feed, so the
+    # schema is never hand-written here.
+    "upstox-python-sdk>=2.30",
 ]
 
 [project.optional-dependencies]

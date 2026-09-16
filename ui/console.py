@@ -14,7 +14,7 @@ from core import clock
 from core.contracts import Timeframe
 from core.pipeline import PipelineSpec
 from ui.builder import PipelineBuilder
-from ui.widgets import AgentCard, StrategyCard, money
+from ui.widgets import AgentCard, PricesCard, StrategyCard, money
 
 log = logging.getLogger("console")
 
@@ -117,15 +117,19 @@ class Console:
             ui.button("Save workspace", on_click=self.save_workspace).props("flat")
             ui.button("Load workspace", on_click=self.load_workspace).props("flat")
             self.arm_switch = ui.switch("Armed LIVE", on_change=self.toggle_live)
+        self.prices_row = ui.column().classes("w-full px-4 gap-4")
         self.pipeline_grid = ui.column().classes("w-full p-4 gap-4")
         self.system_grid = ui.row().classes("w-full p-4 gap-4 flex-wrap")
         self.render_pipelines()
         ui.timer(REFRESH_SECONDS, self.refresh_cards)
 
     def render_pipelines(self) -> None:
+        self.prices_row.clear()
         self.pipeline_grid.clear()
         self.system_grid.clear()
         self.cards.clear()
+        with self.prices_row:
+            self.cards["prices"] = PricesCard(self.engine)
         with self.pipeline_grid:
             if not self.engine.pipelines:
                 ui.label("no pipelines yet — add one to start").classes("text-gray-500")

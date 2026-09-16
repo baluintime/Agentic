@@ -38,6 +38,24 @@ Nothing above is needed to browse instruments or build a pipeline — the
 instrument file is public and loads without a login. You need the token for
 market data, paper fills priced off the live feed, and any live order.
 
+## Is it actually working?
+
+The pipelines page opens with a **Live prices** panel: every instrument the feed
+is subscribed to, its last traded price and how long ago it ticked. If prices are
+moving there, the whole chain is alive — feed, candles, indicators, strategies.
+
+If it says `feed down` or `no tick yet`, check in this order:
+
+| Symptom | Cause |
+|---------|-------|
+| `no feed attached — log in to Upstox` | No valid token yet; the feed needs one. |
+| `connecting…` with rising reconnects | Token rejected, or no network to `api.upstox.com`. |
+| `connected, waiting for the first tick` | The market is closed, or nothing has traded yet. |
+| Prices move, `market-data → ticks` rises | Working. Indicator `evaluations` climbs once candles close. |
+
+The `market-data` widget carries the same facts in detail: `connected`,
+`subscriptions`, `ticks`, `reconnects` and the last tick's timestamp.
+
 ## Using the console
 
 The console opens on the pipelines page. Add a

@@ -16,7 +16,7 @@ from typing import Any
 from broker.auth import AuthManager
 from broker.instruments import InstrumentMaster
 from broker.rest import UpstoxRest
-from broker.ws_feed import MarketDataHub
+from broker.ws_feed import MarketDataHub, UpstoxFeedClient
 from core import clock
 from core import config as config_module
 from core.base_agent import BaseAgent
@@ -172,8 +172,28 @@ class Engine:
             report["instruments_error"] = str(exc)
             log.warning("instrument master not loaded: %s", exc)
         if state.valid:
+            report["feed"] = self.attach_feed()
             report["reconciliation"] = await self.persistence.reconcile()
         return report
+
+    def attach_feed(self) -> str:
+        """Give the hub a real WebSocket once there is a token to authenticate it.
+
+        The hub's connect loop is already running and picks the client up on its
+        next pass, resubscribing everything the pipelines asked for.
+        """
+        if self.hub.client is not None:
+            return "already attached"
+        self.hub.client = UpstoxFeedClient(self.rest)
+        log.info("market data feed attached (%d subscriptions)", len(self.hub.subscriptions))
+        return "attached"
+
+    def label_for(self, instrument_key: str) -> str:
+        """A human name for an instrument key, for the console's price list."""
+        row = self.instruments.row(instrument_key)
+        if row is None:
+            return instrument_key
+        return str(row["trading_symbol"] or row["name"] or instrument_key)
 
     # -- pipelines -----------------------------------------------------------
     async def add_pipeline(self, spec: PipelineSpec) -> Pipeline:

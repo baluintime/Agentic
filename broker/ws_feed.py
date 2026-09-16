@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import uuid
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
@@ -46,6 +47,7 @@ class MarketDataHub(BaseAgent):
         super().__init__(*args, **kwargs)
         self.client = client
         self.refs: Counter[str] = Counter()
+        self.prices: dict[str, Tick] = {}  # last tick per instrument, for the UI
         self.last_tick_at: datetime | None = None
         self.ticks = 0
         self.reconnects = 0
@@ -139,9 +141,14 @@ class MarketDataHub(BaseAgent):
         for tick in ticks_from(message):
             self.ticks += 1
             self.last_tick_at = tick.ts
+            self.prices[tick.instrument_key] = tick
             await self.emit(tick_topic(tick.instrument_key), tick)
 
     # -- UI ------------------------------------------------------------------
+    def price(self, instrument_key: str) -> float | None:
+        tick = self.prices.get(instrument_key)
+        return tick.ltp if tick else None
+
     def status(self) -> dict[str, Any]:
         base = super().status()
         base.update(
@@ -185,13 +192,58 @@ def ticks_from(message: dict[str, Any]) -> list[Tick]:
     return out
 
 
-class UpstoxFeedClient:
-    """Real Upstox market-data WebSocket.
+def decode_feed(frame: bytes) -> dict[str, Any]:
+    """Decode one v3 protobuf frame into the hub's normalised message shape.
 
-    The v3 feed sends protobuf frames, so a decoder must be supplied: generate
-    `MarketDataFeedV3_pb2` from the proto published with the docs and pass a
-    callable that turns one binary frame into the normalised dict shape above.
-    Without a decoder only JSON frames (and the fixtures in tests) are handled.
+    The schema comes from the official SDK's generated module rather than a
+    hand-written guess, so a change on Upstox's side is a dependency bump.
+    Docs: https://upstox.com/developer/api-documentation/v3/market-data-feed/
+    """
+    from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as pb
+
+    response = pb.FeedResponse.FromString(frame)
+    feeds: dict[str, dict[str, Any]] = {}
+    for key, feed in response.feeds.items():
+        payload = _feed_payload(feed)
+        if payload is not None:
+            feeds[key] = payload
+    return {"feeds": feeds}
+
+
+def _feed_payload(feed: Any) -> dict[str, Any] | None:
+    """One instrument's slice of a frame: LTP, exchange timestamp, volume, OI."""
+    which = feed.WhichOneof("FeedUnion")
+    if which == "ltpc":
+        return _ltpc(feed.ltpc)
+    if which != "fullFeed":
+        return None  # option greeks / depth-only frames carry no trade price
+    full = feed.fullFeed
+    inner = full.WhichOneof("FullFeedUnion")
+    if inner == "marketFF":
+        payload = _ltpc(full.marketFF.ltpc)
+        if payload is None:
+            return None
+        # vtt is the day's cumulative traded volume; candles want the delta.
+        payload["volume"] = int(full.marketFF.vtt or 0)
+        payload["oi"] = float(full.marketFF.oi or 0) or None
+        return payload
+    if inner == "indexFF":
+        return _ltpc(full.indexFF.ltpc)  # indices have no volume or open interest
+    return None
+
+
+def _ltpc(ltpc: Any) -> dict[str, Any] | None:
+    if not ltpc.ltp:
+        return None
+    return {"ltp": float(ltpc.ltp), "ts": int(ltpc.ltt) or None}
+
+
+class UpstoxFeedClient:
+    """The real Upstox v3 market-data WebSocket.
+
+    Connects straight to the feed URL with a Bearer header — v3 needs no
+    authorize redirect — and sends subscription requests as binary JSON frames.
+    Docs: https://upstox.com/developer/api-documentation/v3/market-data-feed/
     """
 
     def __init__(
@@ -199,43 +251,45 @@ class UpstoxFeedClient:
         rest,
         decode: Callable[[bytes], dict[str, Any]] | None = None,
         url: str = MARKET_FEED_WS,
+        mode: str = "full",
     ) -> None:
         self.rest = rest
-        self.decode = decode
+        self.decode = decode or decode_feed
         self.url = url
+        self.mode = mode  # "full" carries volume and OI; "ltpc" is price only
         self._ws: Any = None
 
     async def connect(self) -> None:
         import websockets  # imported lazily so tests never need the dependency
 
-        target = await self.rest.feed_authorize() or self.url
+        if not getattr(self.rest, "access_token", None):
+            raise ConnectionError("no access token — log in to Upstox first")
         self._ws = await websockets.connect(
-            target, additional_headers={"Authorization": f"Bearer {self.rest.access_token}"}
+            self.url,
+            additional_headers={"Authorization": f"Bearer {self.rest.access_token}"},
+            max_size=None,
         )
 
     async def subscribe(self, keys: list[str]) -> None:
-        await self._send("sub", keys)
+        await self._send("sub", keys, mode=self.mode)
 
     async def unsubscribe(self, keys: list[str]) -> None:
         await self._send("unsub", keys)
 
-    async def _send(self, method: str, keys: list[str]) -> None:
+    async def _send(self, method: str, keys: list[str], mode: str | None = None) -> None:
         if not self._ws or not keys:
             return
-        payload = {
-            "guid": clock.now().strftime("%H%M%S%f"),
-            "method": method,
-            "data": {"mode": "ltpc", "instrumentKeys": keys},
-        }
-        await self._ws.send(json.dumps(payload).encode())
+        data: dict[str, Any] = {"instrumentKeys": keys}
+        if mode:
+            data["mode"] = mode
+        payload = {"guid": uuid.uuid4().hex, "method": method, "data": data}
+        await self._ws.send(json.dumps(payload).encode())  # binary frame
 
     async def messages(self) -> AsyncIterator[dict[str, Any]]:
         if self._ws is None:
             return
         async for frame in self._ws:
             if isinstance(frame, bytes):
-                if self.decode is None:
-                    continue
                 yield self.decode(frame)
             else:
                 yield json.loads(frame)

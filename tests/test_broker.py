@@ -14,6 +14,7 @@ from broker.instruments import InstrumentMaster
 from broker.paper import PaperBroker, SimulatedLeg
 from broker.rest import ENDPOINTS, TokenBucket, UpstoxError, UpstoxRest
 from broker.ws_feed import MarketDataHub, ticks_from
+from core import clock
 from core.bus import EventBus
 from core.clock import SimClock, set_clock
 from core.contracts import OptionType, Segment, Side
@@ -432,3 +433,98 @@ def test_auth_accepts_a_string_token_path(tmp_path) -> None:
     manager = AuthManager(str(tmp_path / "t.json"), {})
     state = manager.save("tok", {"user_name": "Bala"})
     assert state.valid and manager.token_path.exists()
+
+
+# -- the v3 market-data feed -------------------------------------------------
+def build_frame(**instruments) -> bytes:
+    """A real protobuf frame, built with the schema the feed actually uses."""
+    from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as pb
+
+    response = pb.FeedResponse()
+    response.type = pb.Type.live_feed
+    for key, spec in instruments.items():
+        key = key.replace("__", "|")
+        feed = response.feeds[key]
+        kind = spec.get("kind", "market")
+        if kind == "ltpc":
+            feed.ltpc.ltp = spec["ltp"]
+            feed.ltpc.ltt = spec.get("ltt", 1789450200000)
+        elif kind == "index":
+            feed.fullFeed.indexFF.ltpc.ltp = spec["ltp"]
+            feed.fullFeed.indexFF.ltpc.ltt = spec.get("ltt", 1789450200000)
+        else:
+            feed.fullFeed.marketFF.ltpc.ltp = spec["ltp"]
+            feed.fullFeed.marketFF.ltpc.ltt = spec.get("ltt", 1789450200000)
+            feed.fullFeed.marketFF.vtt = spec.get("vtt", 0)
+            feed.fullFeed.marketFF.oi = spec.get("oi", 0)
+    return response.SerializeToString()
+
+
+def test_decodes_an_option_frame_with_volume_and_oi() -> None:
+    from broker.ws_feed import decode_feed
+
+    message = decode_feed(build_frame(NSE_FO__44675={"ltp": 104.25, "vtt": 1875000, "oi": 1520375}))
+    payload = message["feeds"]["NSE_FO|44675"]
+    assert payload["ltp"] == 104.25
+    assert payload["volume"] == 1_875_000  # cumulative day volume, as candles expect
+    assert payload["oi"] == 1_520_375
+
+
+def test_decodes_an_index_frame_without_volume() -> None:
+    from broker.ws_feed import decode_feed
+
+    message = decode_feed(build_frame(NSE_INDEX__Nifty_50={"ltp": 24873.45, "kind": "index"}))
+    payload = message["feeds"]["NSE_INDEX|Nifty_50"]
+    assert payload["ltp"] == 24873.45
+    assert "volume" not in payload  # indices have none
+
+
+def test_decodes_an_ltpc_only_frame() -> None:
+    from broker.ws_feed import decode_feed
+
+    message = decode_feed(build_frame(NSE_EQ__X={"ltp": 1387.5, "kind": "ltpc"}))
+    assert message["feeds"]["NSE_EQ|X"]["ltp"] == 1387.5
+
+
+def test_a_decoded_frame_becomes_ticks_with_the_exchange_timestamp() -> None:
+    from broker.ws_feed import decode_feed, ticks_from
+
+    frame = build_frame(NSE_FO__44675={"ltp": 104.25, "vtt": 1875000, "ltt": 1789450200000})
+    ticks = ticks_from(decode_feed(frame))
+    assert len(ticks) == 1
+    assert ticks[0].ltp == 104.25 and ticks[0].cum_volume == 1_875_000
+    # the exchange's own millisecond timestamp, converted to IST
+    expected = datetime.fromtimestamp(1789450200000 / 1000, tz=clock.IST)
+    assert ticks[0].ts == expected
+    assert ticks[0].ts.utcoffset().total_seconds() == 19800
+
+
+def test_a_frame_with_no_traded_price_yields_nothing() -> None:
+    from broker.ws_feed import decode_feed
+
+    assert decode_feed(build_frame(NSE_FO__44675={"ltp": 0.0}))["feeds"] == {}
+
+
+@pytest.mark.asyncio
+async def test_the_hub_keeps_a_price_book_for_the_console() -> None:
+    bus = EventBus()
+    await bus.start()
+    feed = FakeFeed([{"feeds": {"NSE|1": {"ltp": 100.5}, "NSE|2": {"ltp": 55.0}}}])
+    hub = MarketDataHub("hub", None, bus, client=feed)
+    await hub.subscribe("NSE|1")
+    await hub.start()
+    await asyncio.sleep(0.05)
+    await bus.drain()
+    assert hub.price("NSE|1") == 100.5
+    assert hub.price("NSE|404") is None
+    await hub.stop()
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_feed_client_refuses_to_connect_without_a_token() -> None:
+    from broker.ws_feed import UpstoxFeedClient
+
+    client = UpstoxFeedClient(UpstoxRest(access_token=None))
+    with pytest.raises(ConnectionError, match="log in"):
+        await client.connect()
