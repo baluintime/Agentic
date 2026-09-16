@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from collections import deque
 from typing import Any
+from urllib.parse import urlparse
 
+from fastapi import Request
 from nicegui import ui
 
 from core import clock
@@ -14,8 +16,21 @@ from core.pipeline import PipelineSpec
 from ui.builder import PipelineBuilder
 from ui.widgets import AgentCard, StrategyCard, money
 
+log = logging.getLogger("console")
+
 REFRESH_SECONDS = 1.0
 LOG_LINES = 400
+DEFAULT_CALLBACK_PATH = "/auth/callback"
+
+
+def callback_path_for(redirect_uri: str) -> str:
+    """The path part of UPSTOX_REDIRECT_URI, so the route always matches it.
+
+    Upstox redirects to whatever is registered on your app; the console has to
+    serve that exact path or the browser lands on a 404 holding your code.
+    """
+    path = urlparse(redirect_uri or "").path
+    return path if path and path != "/" else DEFAULT_CALLBACK_PATH
 
 
 class LogBuffer(logging.Handler):
@@ -44,16 +59,29 @@ class Console:
         ui.page("/positions")(self.positions_page)
         ui.page("/logs")(self.logs_page)
         ui.page("/settings")(self.settings_page)
+        ui.page(self.callback_path)(self.callback_page)
+
+    @property
+    def callback_path(self) -> str:
+        return callback_path_for(self.engine.auth.redirect_uri)
 
     def header(self) -> None:
+        """Built per client: every browser tab owns its own elements and timer.
+
+        Keeping these on `self` instead would mean the newest tab's widgets
+        replaced the previous one's, and older tabs would stop updating.
+        """
         with ui.header().classes("items-center justify-between px-4 py-2"):
             with ui.row().classes("items-center gap-4"):
                 ui.label("Upstox Agents").classes("text-lg font-medium")
-                self.token_badge = ui.badge("checking token").props("outline")
-                self.user_label = ui.label("").classes("text-sm")
-                self.clock_label = ui.label("").classes("text-sm")
+                token_badge = ui.badge("checking token").props("outline")
+                user_label = ui.label("").classes("text-sm")
+                clock_label = ui.label("").classes("text-sm")
+                login_button = ui.button("Login to Upstox", on_click=self.start_login).props(
+                    "dense color=primary"
+                )
             with ui.row().classes("items-center gap-4"):
-                self.totals_label = ui.label("").classes("text-sm")
+                totals_label = ui.label("").classes("text-sm")
                 ui.button("Download All", on_click=self.download_all).props("flat dense")
                 ui.button("Kill Switch", on_click=self.confirm_kill).props("dense color=negative")
             with ui.row().classes("gap-2"):
@@ -61,21 +89,24 @@ class Console:
                 ui.link("Positions", "/positions").classes("text-white text-sm")
                 ui.link("Logs", "/logs").classes("text-white text-sm")
                 ui.link("Settings", "/settings").classes("text-white text-sm")
-        ui.timer(REFRESH_SECONDS, self.refresh_header)
 
-    def refresh_header(self) -> None:
-        state = self.engine.auth.state
-        self.token_badge.set_text("token ok" if state.valid else (state.message or "no token"))
-        self.token_badge.props(f"color={'positive' if state.valid else 'negative'}")
-        self.user_label.set_text(state.user_name or "")
-        now = clock.now()
-        session = "open" if clock.get_clock().is_market_open() else "closed"
-        self.clock_label.set_text(f"{now:%H:%M:%S} IST · market {session}")
-        totals = self.engine.totals()
-        self.totals_label.set_text(
-            f"gross {money(totals['gross'])} · charges {money(totals['charges'])} · "
-            f"net {money(totals['net'])} · open {money(totals['open_mtm'])}"
-        )
+        def refresh() -> None:
+            state = self.engine.auth.state
+            token_badge.set_text("token ok" if state.valid else (state.message or "no token"))
+            token_badge.props(f"color={'positive' if state.valid else 'negative'}")
+            user_label.set_text(state.user_name or "")
+            login_button.set_visibility(not state.valid)
+            now = clock.now()
+            session = "open" if clock.get_clock().is_market_open() else "closed"
+            clock_label.set_text(f"{now:%H:%M:%S} IST · market {session}")
+            totals = self.engine.totals()
+            totals_label.set_text(
+                f"gross {money(totals['gross'])} · charges {money(totals['charges'])} · "
+                f"net {money(totals['net'])} · open {money(totals['open_mtm'])}"
+            )
+
+        refresh()
+        ui.timer(REFRESH_SECONDS, refresh)
 
     # -- pipelines -----------------------------------------------------------
     def pipelines_page(self) -> None:
@@ -180,6 +211,80 @@ class Console:
                 await self.engine.add_pipeline(spec)
         self.render_pipelines()
         ui.notify(f"loaded {len(specs)} pipeline(s) — paused; resume each one to trade")
+
+    # -- login ---------------------------------------------------------------
+    async def start_login(self) -> None:
+        """Upstox tokens last one trading day, so this is a daily step."""
+        auth = self.engine.auth
+        if not auth.configured:
+            ui.notify(
+                "set UPSTOX_API_KEY and UPSTOX_API_SECRET in .env, then restart",
+                type="negative",
+                timeout=8000,
+            )
+            return
+        with ui.dialog() as dialog, ui.card().classes("w-[520px]"):
+            ui.label("Connect Upstox").classes("text-lg font-medium")
+            ui.label(
+                "Approve the app on Upstox. You come back here automatically if "
+                f"{auth.redirect_uri} is the redirect URI registered on your Upstox app."
+            ).classes("text-xs text-gray-500")
+            ui.button(
+                "Open the Upstox login page",
+                on_click=lambda: ui.navigate.to(auth.login_url(), new_tab=True),
+            ).props("color=primary")
+            ui.separator()
+            ui.label("Registered a different redirect URI?").classes("text-sm")
+            ui.label(
+                "Approve anyway, then copy the `code=` value out of the address bar "
+                "you land on and paste it here."
+            ).classes("text-xs text-gray-500")
+            code_input = ui.input("Authorization code").classes("w-full")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Close", on_click=dialog.close).props("flat")
+                ui.button("Use this code", on_click=lambda: dialog.submit(code_input.value))
+        code = await dialog
+        if code:
+            await self.finish_login(str(code).strip())
+
+    async def finish_login(self, code: str) -> str:
+        """Exchange the code, then load instruments and reconcile."""
+        state = await self.engine.auth.exchange_code(code)
+        if not state.valid:
+            ui.notify(state.message or "login failed", type="negative", timeout=8000)
+            return state.message or "login failed"
+        await self.engine.auth.validate(self.engine.rest)
+        await self.engine.connect()
+        ui.notify(f"connected as {state.user_name or 'your Upstox account'}", type="positive")
+        return ""
+
+    async def callback_page(self, request: Request) -> None:
+        """Where Upstox sends the browser back after you approve the app."""
+        code = request.query_params.get("code")
+        error = request.query_params.get("error_description") or request.query_params.get("error")
+        with ui.column().classes("w-full items-center p-8 gap-4"):
+            ui.label("Upstox login").classes("text-xl font-medium")
+            if error:
+                ui.label(f"Upstox refused the login: {error}").classes("text-red-600")
+            elif not code:
+                ui.label("No authorization code in the callback URL.").classes("text-red-600")
+            else:
+                try:
+                    message = await self.finish_login(code)
+                except Exception as exc:  # a 500 here would strand the user mid-login
+                    log.exception("login callback failed")
+                    message = f"{type(exc).__name__}: {exc}"
+                if message:
+                    ui.label(message).classes("text-red-600")
+                else:
+                    state = self.engine.auth.state
+                    ui.label(f"Connected as {state.user_name or 'your Upstox account'}.").classes(
+                        "text-green-700"
+                    )
+                    ui.label("The token is stored for today; log in again tomorrow.").classes(
+                        "text-xs text-gray-500"
+                    )
+            ui.button("Back to the console", on_click=lambda: ui.navigate.to("/"))
 
     # -- other pages ---------------------------------------------------------
     def positions_page(self) -> None:

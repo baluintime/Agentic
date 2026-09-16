@@ -54,9 +54,11 @@ class TokenState:
 class AuthManager:
     """Loads, validates and stores the daily access token."""
 
-    def __init__(self, token_path: Path | None = None, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, token_path: Path | str | None = None, env: dict[str, str] | None = None
+    ) -> None:
         self.env = env if env is not None else dict(os.environ)
-        self.token_path = token_path or (runtime_dir() / TOKEN_FILENAME)
+        self.token_path = Path(token_path) if token_path else runtime_dir() / TOKEN_FILENAME
         self.state = TokenState()
 
     # -- env -----------------------------------------------------------------

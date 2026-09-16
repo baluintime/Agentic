@@ -13,7 +13,34 @@ pytest -q                     # 271 offline tests: no network, no broker
 python -m app                 # the console on http://localhost:8080
 ```
 
-The console opens on the pipelines page. Log in to Upstox from the header, add a
+## Connecting Upstox
+
+Upstox access tokens last one trading day, so this is a morning ritual.
+
+1. Create an app at [Upstox's developer console](https://account.upstox.com/developer/apps)
+   and copy the API key and secret into `.env`.
+2. **Register `http://localhost:8080/auth/callback` as that app's redirect URI**, and put
+   the same value in `UPSTOX_REDIRECT_URI`. This is the step people miss: Upstox
+   only ever redirects to the URI registered on the app, and the console serves
+   exactly the path in your `.env`, so the two have to agree.
+3. Start the console and click **Login to Upstox** in the header. Approve the app
+   in the tab that opens; you land back on the console, connected.
+4. If you registered a different redirect URI (a public host, a different port),
+   approve anyway, copy the `code=` value out of the address bar you land on, and
+   paste it into the same dialog.
+
+The token is written to `$UPSTOX_RUNTIME_DIR/upstox_token.json` with `0600`
+permissions and is never logged. The header badge shows `token ok` once the
+profile endpoint confirms it; tomorrow it will say the token is from an earlier
+day and the Login button comes back.
+
+Nothing above is needed to browse instruments or build a pipeline — the
+instrument file is public and loads without a login. You need the token for
+market data, paper fills priced off the live feed, and any live order.
+
+## Using the console
+
+The console opens on the pipelines page. Add a
 pipeline with the stepper (instrument → segment → product → timeframe →
 indicator → strategy → order agent → parameters → Paper/Live), and watch the
 agent widgets. Paper mode needs no arming and routes every order to the Paper

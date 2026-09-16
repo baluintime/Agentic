@@ -380,3 +380,55 @@ def test_tradable_deduplicates_by_instrument_key() -> None:
     rows = InstrumentMaster.from_records(records).tradable()
     keys = [row["instrument_key"] for row in rows]
     assert len(keys) == len(set(keys))
+
+
+# -- the daily login ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_exchange_code_stores_the_token(tmp_path) -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = request.content.decode()
+        return httpx.Response(
+            200, json={"access_token": "fresh-token", "user_name": "Bala", "user_id": "B1"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    manager = AuthManager(
+        tmp_path / "t.json",
+        {
+            "UPSTOX_API_KEY": "key",
+            "UPSTOX_API_SECRET": "secret",
+            "UPSTOX_REDIRECT_URI": "http://localhost:8080/auth/callback",
+        },
+    )
+    state = await manager.exchange_code("the-code", client=client)
+    assert state.valid and state.user_name == "Bala"
+    assert "authorization_code" in seen["body"] and "the-code" in seen["body"]
+    assert seen["url"].endswith("/v2/login/authorization/token")
+    # stored for the rest of the day, private to the user
+    assert AuthManager(tmp_path / "t.json", {}).load().access_token == "fresh-token"
+    assert oct((tmp_path / "t.json").stat().st_mode)[-3:] == "600"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_reports_a_refusal(tmp_path) -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(400, json={"error": "invalid_grant"})
+        )
+    )
+    manager = AuthManager(tmp_path / "t.json", {"UPSTOX_API_KEY": "k", "UPSTOX_API_SECRET": "s"})
+    state = await manager.exchange_code("stale-code", client=client)
+    assert not state.valid and "invalid_grant" in state.message
+    assert not (tmp_path / "t.json").exists()  # nothing stored on a failed login
+    await client.aclose()
+
+
+def test_auth_accepts_a_string_token_path(tmp_path) -> None:
+    """The constructor is public; a str path must not blow up inside save()."""
+    manager = AuthManager(str(tmp_path / "t.json"), {})
+    state = manager.save("tok", {"user_name": "Bala"})
+    assert state.valid and manager.token_path.exists()
