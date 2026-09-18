@@ -18,6 +18,7 @@ from core.base_agent import BaseAgent
 from core.contracts import (
     ORDER_APPROVED_TOPIC,
     ORDER_REQUEST_TOPIC,
+    TERMINAL_EXIT_STATUSES,
     OrderEvent,
     OrderRequest,
     OrderStatus,
@@ -54,7 +55,10 @@ class RiskAgent(BaseAgent):
         self.blocked = False
         self.block_reason = ""
         self.killed = False
-        self.open_positions: dict[str, int] = defaultdict(int)
+        # pipeline_id -> the correlation id of its open (or pending) entry.
+        # One position per pipeline, so this doubles as the open-position count.
+        self.open_entries: dict[str, str] = {}
+        self._tracked: dict[str, tuple[str, str]] = {}  # correlation -> (purpose, pipeline)
         self.entries_today: dict[str, int] = defaultdict(int)
         self.approved = 0
         self.rejected = 0
@@ -65,6 +69,7 @@ class RiskAgent(BaseAgent):
     async def start(self) -> None:
         await super().start()
         self.listen(ORDER_REQUEST_TOPIC, self.on_request)
+        self.listen("order.event.*", self._on_order_event)
         self.listen("system.session.new_day", self._on_new_day)
 
     # -- gate ----------------------------------------------------------------
@@ -109,8 +114,11 @@ class RiskAgent(BaseAgent):
         if self._is_duplicate(req, cfg):
             return "duplicate order suppressed"
         if purpose == "entry":
-            if sum(self.open_positions.values()) >= cfg.max_open_positions:
-                return f"max open positions ({cfg.max_open_positions}) reached"
+            if len(self.open_entries) >= cfg.max_open_positions:
+                return (
+                    f"max open positions reached ({len(self.open_entries)} of "
+                    f"max_open_positions={cfg.max_open_positions} in config/risk.yaml)"
+                )
             if self.entries_today[req.pipeline_id] >= cfg.max_trades_per_day_per_pipeline:
                 return f"max trades/day ({cfg.max_trades_per_day_per_pipeline}) for this pipeline"
             size_error = self._size_error(req, cfg)
@@ -152,7 +160,10 @@ class RiskAgent(BaseAgent):
         lot_size = int(req.meta.get("lot_size") or 1)
         lots = req.quantity / max(1, lot_size)
         if lots > cfg.max_lots_per_order:
-            return f"{lots:g} lots above the limit of {cfg.max_lots_per_order}"
+            return (
+                f"{lots:g} lots is above max_lots_per_order={cfg.max_lots_per_order} "
+                "in config/risk.yaml"
+            )
         return None
 
     def _loss_error(self, req: OrderRequest, cfg: RiskConfig) -> str | None:
@@ -175,15 +186,57 @@ class RiskAgent(BaseAgent):
         return round(total, 2), dict(per_pipeline)
 
     def _record(self, req: OrderRequest) -> None:
-        if req.meta.get("purpose") == "entry":
+        purpose = req.meta.get("purpose", "entry")
+        self._tracked[req.correlation_id] = (purpose, req.pipeline_id)
+        if purpose == "entry":
             self.entries_today[req.pipeline_id] += 1
-            self.open_positions[req.pipeline_id] += 1
-        else:
-            self.open_positions[req.pipeline_id] = max(0, self.open_positions[req.pipeline_id] - 1)
+            self.open_entries[req.pipeline_id] = req.correlation_id
+
+    async def _on_order_event(self, event: OrderEvent) -> None:
+        """Positions are counted from what actually happened, not from requests.
+
+        Target and stop-loss legs close a position without any exit request ever
+        reaching this agent — a broker GTT leg and the Paper agent both report on
+        the *entry's* correlation id. Counting requests therefore leaked one
+        position per target/SL exit until the limit blocked every new entry.
+        """
+        known = self._tracked.get(event.correlation_id)
+        if known is None:
+            return
+        purpose, pipeline_id = known
+        status = event.status
+        if status in (s.value for s in TERMINAL_EXIT_STATUSES):
+            self._release(pipeline_id, event.correlation_id)
+        elif purpose == "entry" and status in (
+            OrderStatus.REJECTED.value,
+            OrderStatus.CANCELLED.value,
+        ):
+            self._release(pipeline_id, event.correlation_id)  # never actually opened
+        elif purpose == "exit" and status == OrderStatus.FILLED.value:
+            self._release(pipeline_id, event.correlation_id)
+        elif purpose == "exit" and status in (
+            OrderStatus.REJECTED.value,
+            OrderStatus.CANCELLED.value,
+        ):
+            self._tracked.pop(event.correlation_id, None)  # the position is still open
+
+    def _release(self, pipeline_id: str, correlation_id: str) -> None:
+        entry = self.open_entries.pop(pipeline_id, None)
+        self._tracked.pop(correlation_id, None)
+        if entry:
+            self._tracked.pop(entry, None)
+
+    def sync_open_positions(self, open_pipelines: set[str]) -> int:
+        """Correct any drift against what the strategies actually hold."""
+        for pipeline_id in list(self.open_entries):
+            if pipeline_id not in open_pipelines:
+                self._release(pipeline_id, self.open_entries.get(pipeline_id, ""))
+        return len(self.open_entries)
 
     async def _on_new_day(self, _: SystemEvent) -> None:
         self.entries_today.clear()
-        self.open_positions.clear()
+        self.open_entries.clear()
+        self._tracked.clear()
         self.blocked = False
         self.block_reason = ""
 
@@ -228,7 +281,7 @@ class RiskAgent(BaseAgent):
                 "killed": self.killed,
                 "approved": self.approved,
                 "rejected": self.rejected,
-                "open_positions": sum(self.open_positions.values()),
+                "open_positions": len(self.open_entries),
                 "net_today": total,
                 "per_pipeline": per_pipeline,
                 "last_rejection": self.rejections[-1] if self.rejections else "",

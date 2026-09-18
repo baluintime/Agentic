@@ -237,6 +237,7 @@ class Engine:
         self.apply_session_state(strategy)
         if spec.paused:
             strategy.pause()
+        self.sync_risk_positions()
         log.info("pipeline %s added (%s)", spec.pipeline_id, spec.name)
         return pipeline
 
@@ -256,9 +257,19 @@ class Engine:
                 self.candle_refs.pop(key, None)
                 if agent:
                     await agent.stop()
+        self.sync_risk_positions()
 
     def pipeline(self, pipeline_id: str) -> Pipeline | None:
         return self.pipelines.get(pipeline_id)
+
+    def sync_risk_positions(self) -> int:
+        """Reconcile the Risk Agent's open-position count with the strategies."""
+        open_pipelines = {
+            pipeline_id
+            for pipeline_id, pipeline in self.pipelines.items()
+            if not pipeline.strategy.position.is_flat
+        }
+        return self.risk.sync_open_positions(open_pipelines)
 
     def apply_session_state(self, strategy: StrategyAgent) -> None:
         """Catch a new strategy up on system events it was not alive to hear.

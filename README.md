@@ -61,6 +61,26 @@ arrived as a new dependency and the console cannot receive prices without it.
 The `market-data` widget carries the same facts in detail: `connected`,
 `subscriptions`, `ticks`, `reconnects` and the last tick's timestamp.
 
+## Risk limits
+
+Every order passes the Risk Agent, and its limits live in `config/risk.yaml`.
+They are deliberately small starting values — raise them once you know what you
+want to run, and restart the console to pick up the change.
+
+| Setting | Blocks | Rejection message says |
+|---------|--------|------------------------|
+| `max_lots_per_order` | An order larger than N lots | `N lots is above max_lots_per_order=…` |
+| `max_open_positions` | A new entry while N positions are already open | `max open positions reached (…)` |
+| `max_trades_per_day_per_pipeline` | Further entries from a busy pipeline | `max trades/day …` |
+| `max_capital_per_stock_order` | A stock order above ₹N | `order value above …` |
+| `max_daily_loss_total` / `…_per_pipeline` | New entries after the day's loss limit | `daily loss limit hit …` |
+| `max_orders_per_second` | Bursts above the broker/SEBI rate | `order rate above …` |
+
+Every rejection names the setting and the file, so a blocked order tells you
+which line to edit. The `risk` widget shows the live count of open positions; if
+it ever disagrees with what your strategies actually hold, the engine
+reconciles it whenever a pipeline is added or removed.
+
 ## Using the console
 
 The console opens on the pipelines page. Add a

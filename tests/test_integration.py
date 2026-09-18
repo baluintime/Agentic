@@ -123,6 +123,10 @@ async def test_paper_round_trip_produces_a_trade(tmp_path, sim_clock) -> None:
     assert trade.indicator_snapshot["macd"] > trade.indicator_snapshot["signal"]
     assert strategy.position.is_flat
     assert engine.totals()["net"] == trade.net_pnl
+    # The target leg closed the position without any exit request: the Risk
+    # Agent must still free the slot, or the next entries are blocked forever.
+    assert engine.risk.status()["open_positions"] == 0
+    assert engine.sync_risk_positions() == 0
     await engine.stop()
 
 

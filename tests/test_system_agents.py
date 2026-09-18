@@ -9,7 +9,7 @@ import pytest
 from core import clock
 from core.bus import EventBus
 from core.clock import SimClock, set_clock
-from core.contracts import Candle, ExecMode, Segment, Tick, Timeframe
+from core.contracts import Candle, ExecMode, OrderStatus, Segment, Tick, Timeframe
 from core.pipeline import PipelineSpec
 from core.store import Store
 from system_agents.export import ExportAgent
@@ -444,4 +444,150 @@ async def test_squareoff_does_not_re_run_after_a_successful_verification(sim_clo
     await bus.drain()
     assert len([e for e in system.messages if e.kind == "squareoff.start"]) == 1
     assert len([e for e in system.messages if e.kind == "squareoff.done"]) == 1
+    await bus.stop()
+
+
+# -- open-position accounting ------------------------------------------------
+async def approve(bus: EventBus, agent: RiskAgent, **overrides):
+    """Push one request through the gate and return it."""
+    request = make_request(**overrides)
+    await bus.publish_and_drain("order.request", request)
+    return request
+
+
+async def report(bus: EventBus, correlation_id: str, status: OrderStatus, origin="strategy-1"):
+    from core.contracts import OrderEvent
+
+    await bus.publish_and_drain(
+        f"order.event.{origin}",
+        OrderEvent(correlation_id, origin, status.value, 100.0, 75, "B1", clock.now()),
+    )
+
+
+def entry_meta(**extra) -> dict:
+    return {"purpose": "entry", "segment": "option", "lot_size": 75, **extra}
+
+
+def exit_meta(**extra) -> dict:
+    return {"purpose": "exit", "segment": "option", "lot_size": 75, **extra}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "closing",
+    [OrderStatus.TARGET_HIT, OrderStatus.SL_HIT, OrderStatus.SQUARED_OFF],
+)
+async def test_a_broker_leg_closing_a_position_frees_the_slot(sim_clock, closing) -> None:
+    """Target/SL legs report on the *entry* correlation and send no exit request."""
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus)
+    await agent.start()
+
+    request = await approve(bus, agent, meta=entry_meta())
+    await report(bus, request.correlation_id, OrderStatus.FILLED)
+    assert agent.status()["open_positions"] == 1
+
+    await report(bus, request.correlation_id, closing)
+    assert agent.status()["open_positions"] == 0
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_repeated_target_exits_do_not_exhaust_the_limit(sim_clock) -> None:
+    """The reported bug: five target-closed trades blocked every later entry."""
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus, max_open_positions=5)
+    await agent.start()
+    for round_trip in range(8):
+        request = await approve(bus, agent, correlation_id=f"c{round_trip}", meta=entry_meta())
+        await report(bus, request.correlation_id, OrderStatus.FILLED)
+        await report(bus, request.correlation_id, OrderStatus.TARGET_HIT)
+    assert agent.status()["open_positions"] == 0
+    assert agent.rejected == 0
+    assert agent.approved == 8
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_exit_fill_frees_the_slot(sim_clock) -> None:
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus)
+    await agent.start()
+    entry = await approve(bus, agent, correlation_id="e1", meta=entry_meta())
+    await report(bus, entry.correlation_id, OrderStatus.FILLED)
+    exit_request = await approve(bus, agent, correlation_id="x1", meta=exit_meta())
+    assert agent.status()["open_positions"] == 1  # still open until the exit fills
+    await report(bus, exit_request.correlation_id, OrderStatus.FILLED)
+    assert agent.status()["open_positions"] == 0
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_entry_never_counts(sim_clock) -> None:
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus)
+    await agent.start()
+    entry = await approve(bus, agent, meta=entry_meta())
+    await report(bus, entry.correlation_id, OrderStatus.REJECTED)
+    assert agent.status()["open_positions"] == 0
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_exit_leaves_the_position_open(sim_clock) -> None:
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus)
+    await agent.start()
+    entry = await approve(bus, agent, correlation_id="e1", meta=entry_meta())
+    await report(bus, entry.correlation_id, OrderStatus.FILLED)
+    exit_request = await approve(bus, agent, correlation_id="x1", meta=exit_meta())
+    await report(bus, exit_request.correlation_id, OrderStatus.REJECTED)
+    assert agent.status()["open_positions"] == 1  # the exit failed; we are still in
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_limit_still_blocks_genuinely_open_positions(sim_clock) -> None:
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus, max_open_positions=2)
+    await agent.start()
+    for index in range(2):
+        request = await approve(
+            bus, agent, correlation_id=f"c{index}", pipeline_id=f"p{index}", meta=entry_meta()
+        )
+        await report(bus, request.correlation_id, OrderStatus.FILLED)
+    reason = agent.check(make_request(correlation_id="c9", pipeline_id="p9", meta=entry_meta()))
+    assert reason is not None and "max_open_positions=2" in reason
+    assert "config/risk.yaml" in reason  # the message names where to change it
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_lot_limit_names_the_setting(sim_clock) -> None:
+    agent = risk(EventBus(), max_lots_per_order=5)
+    reason = agent.check(make_request(quantity=75 * 6, meta=entry_meta()))
+    assert reason is not None
+    assert "max_lots_per_order=5" in reason and "config/risk.yaml" in reason
+
+
+@pytest.mark.asyncio
+async def test_sync_corrects_drift_against_the_strategies(sim_clock) -> None:
+    bus = EventBus()
+    await bus.start()
+    agent = risk(bus)
+    await agent.start()
+    for index in range(3):
+        request = await approve(
+            bus, agent, correlation_id=f"c{index}", pipeline_id=f"p{index}", meta=entry_meta()
+        )
+        await report(bus, request.correlation_id, OrderStatus.FILLED)
+    assert agent.status()["open_positions"] == 3
+    assert agent.sync_open_positions({"p1"}) == 1  # only p1 is really holding
+    assert agent.status()["open_positions"] == 1
     await bus.stop()
