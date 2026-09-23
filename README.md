@@ -81,6 +81,24 @@ which line to edit. The `risk` widget shows the live count of open positions; if
 it ever disagrees with what your strategies actually hold, the engine
 reconciles it whenever a pipeline is added or removed.
 
+## Strategy parameters
+
+Target and stop-loss take decimals — `0.5`, `0.25`, `12.75` — and are in points
+on the **traded** instrument, so for an option pipeline they are points of
+premium, not index points. Switch `target_mode` to `percent` to express them as
+a percentage of the fill price instead.
+
+A target of `0` means *no target leg*, and the same for the stop-loss. That is
+useful for a strategy that exits on the opposite signal alone, but it does mean
+a mistyped zero leaves the position running unprotected.
+
+Trigger prices sent to the broker are snapped to the instrument's tick size, so
+a 0.33 target on a 0.05-tick option becomes a valid trigger rather than an order
+the exchange rejects.
+
+Lots and indicator periods are whole numbers; anything else is refused with a
+message naming the field.
+
 ## Using the console
 
 The console opens on the pipelines page. Add a

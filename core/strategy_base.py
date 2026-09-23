@@ -249,6 +249,7 @@ class StrategyAgent(BaseAgent):
                 "purpose": purpose,
                 "instrument_label": instrument.label,
                 "lot_size": instrument.lot_size,
+                "tick_size": instrument.tick_size,
                 "freeze_quantity": instrument.freeze_quantity,
                 "strategy": self.name,
                 "target_mode": self.cfg("target_mode", "points"),

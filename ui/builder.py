@@ -9,10 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 from nicegui import ui
+from pydantic import ValidationError
 
 from core.contracts import ExecMode, Product, Segment, Timeframe
 from core.pipeline import PipelineSpec
-from ui.forms import config_form, form_values
+from ui.forms import config_form, field_label, form_values
 
 SEGMENTS = [s.value for s in Segment]
 PRODUCTS = {"Intraday": Product.INTRADAY.value, "Delivery-Overnight": Product.DELIVERY.value}
@@ -197,6 +198,12 @@ class PipelineBuilder:
             return
         indicator_spec = self.engine.registry.get("indicator", self.choice["indicator"])
         strategy_spec = self.engine.registry.get("strategy", self.choice["strategy"])
+        try:
+            indicator_params = form_values(self.indicator_form, indicator_spec.cls.Config)
+            strategy_params = form_values(self.strategy_form, strategy_spec.cls.Config)
+        except (ValueError, ValidationError) as exc:
+            ui.notify(_parameter_problem(exc), type="negative", timeout=8000)
+            return
         spec = PipelineSpec(
             underlying_key=self.instrument["instrument_key"],
             underlying_symbol=self.instrument["trading_symbol"],
@@ -208,8 +215,8 @@ class PipelineBuilder:
             order_agent=self.order_agent.value,
             exec_mode=ExecMode(self.exec_mode.value),
             expiry_rule=self.expiry_rule.value,
-            indicator_params=form_values(self.indicator_form, indicator_spec.cls.Config),
-            strategy_params=form_values(self.strategy_form, strategy_spec.cls.Config),
+            indicator_params=indicator_params,
+            strategy_params=strategy_params,
         )
         if spec.live and not self.engine.armed_live:
             ui.notify("arm the pipeline for LIVE in the header first", type="warning")
@@ -221,3 +228,12 @@ class PipelineBuilder:
             return
         self.dialog.close()
         ui.notify(f"pipeline {spec.name} created")
+
+
+def _parameter_problem(exc: Exception) -> str:
+    """Name the offending parameter rather than dumping a validation traceback."""
+    if isinstance(exc, ValidationError):
+        first = exc.errors()[0]
+        field = ".".join(str(part) for part in first["loc"]) or "parameter"
+        return f"{field_label(field)}: {first['msg']}"
+    return str(exc)

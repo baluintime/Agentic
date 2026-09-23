@@ -126,6 +126,20 @@ class OrderAgent(BaseAgent):
         return base + [quantity - freeze_quantity * (count - 1)]
 
     @staticmethod
+    def round_to_tick(price: float | None, tick_size: float | None) -> float | None:
+        """Exchanges reject a trigger price that is not a multiple of the tick.
+
+        A fractional target (0.33 points on a 0.05-tick option) lands between
+        ticks, so every price sent to the broker is snapped to the grid.
+        """
+        if price is None:
+            return None
+        tick = float(tick_size or 0)
+        if tick <= 0:
+            return round(price, 2)
+        return round(round(price / tick) * tick, 2)
+
+    @staticmethod
     def resolve_targets(req: OrderRequest, fill_price: float) -> tuple[float | None, float | None]:
         """Absolute target and stop-loss prices from the request and the actual fill.
 

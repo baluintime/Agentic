@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.contracts import OrderRequest, OrderStatus, Side
+from core.order_base import OrderAgent
 
 
 @dataclass
@@ -48,19 +49,28 @@ def entry_payload(req: OrderRequest, quantity: int, tag: str, validity: str) -> 
 def gtt_payload(
     req: OrderRequest, quantity: int, target: float | None, stop: float | None, tag: str
 ) -> dict[str, Any]:
-    """Exit legs: a target trigger and a stop-loss trigger on the opposite side."""
+    """Exit legs: a target trigger and a stop-loss trigger on the opposite side.
+
+    Trigger prices are snapped to the instrument's tick size — the exchange
+    rejects anything off the grid, which a fractional target makes easy to hit.
+    """
+    tick = req.meta.get("tick_size")
     rules: list[dict[str, Any]] = []
     if target is not None:
         rules.append(
             {
                 "strategy": "ENTRY",
                 "trigger_type": "ABOVE" if req.side is Side.BUY else "BELOW",
-                "trigger_price": round(target, 2),
+                "trigger_price": OrderAgent.round_to_tick(target, tick),
             }
         )
     if stop is not None:
         rules.append(
-            {"strategy": "STOPLOSS", "trigger_type": "IMMEDIATE", "trigger_price": round(stop, 2)}
+            {
+                "strategy": "STOPLOSS",
+                "trigger_type": "IMMEDIATE",
+                "trigger_price": OrderAgent.round_to_tick(stop, tick),
+            }
         )
     return {
         "type": "MULTIPLE" if len(rules) > 1 else "SINGLE",

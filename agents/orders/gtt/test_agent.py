@@ -129,3 +129,31 @@ async def test_squareoff_cancels_open_gtts_first() -> None:
     assert rest.cancelled_gtts == ["GTT-1"]
     assert not agent.open_gtts
     await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_trigger_prices_snap_to_the_instrument_tick() -> None:
+    """A fractional target lands between ticks; the exchange rejects those."""
+    rest = FakeRest(fills=[fill(quantity=75, price=104.25)])
+    meta = {**LIVE_META, "tick_size": 0.05}
+    await build(rest).place(make_request(target_points=0.33, stoploss_points=0.33, meta=meta))
+    prices = [rule["trigger_price"] for rule in rest.gtts[0]["rules"]]
+    assert prices == [104.6, 103.9]  # 104.58 / 103.92 snapped to the 0.05 grid
+    assert all(round(p / 0.05) * 0.05 == pytest.approx(p) for p in prices)
+
+
+@pytest.mark.asyncio
+async def test_a_clean_fractional_target_is_left_alone() -> None:
+    rest = FakeRest(fills=[fill(quantity=75, price=104.25)])
+    meta = {**LIVE_META, "tick_size": 0.05}
+    await build(rest).place(make_request(target_points=0.5, stoploss_points=0.25, meta=meta))
+    prices = {r["strategy"]: r["trigger_price"] for r in rest.gtts[0]["rules"]}
+    assert prices["ENTRY"] == 104.75 and prices["STOPLOSS"] == 104.0
+
+
+def test_rounding_helper_handles_a_missing_tick_size() -> None:
+    assert GttOrderAgent.round_to_tick(104.583, None) == 104.58
+    assert GttOrderAgent.round_to_tick(104.583, 0) == 104.58
+    assert GttOrderAgent.round_to_tick(None, 0.05) is None
+    assert GttOrderAgent.round_to_tick(104.583, 0.05) == 104.6
+    assert GttOrderAgent.round_to_tick(1387.4, 0.01) == 1387.4
