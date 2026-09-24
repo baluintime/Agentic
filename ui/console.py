@@ -192,16 +192,45 @@ class Console:
             ui.notify("kill switch activated", type="negative")
 
     def download_all(self) -> None:
-        path = self.engine.export.export_all()
-        ui.download(str(path))
-        ui.notify(f"exported {path.name}")
+        """Always writes to disk; the browser download is a convenience on top."""
+        try:
+            path = self.engine.export.export_all()
+        except Exception as exc:
+            log.exception("export failed")
+            ui.notify(f"export failed: {type(exc).__name__}: {exc}", type="negative", timeout=10000)
+            return
+        status = self.engine.export.status()
+        self._offer(
+            path,
+            f"{status['data_sheets']} sheet(s) and {status['tick_files']} tick file(s)",
+        )
 
     def export_agent(self, agent) -> None:
-        path = self.engine.export.export_agent(agent)
-        if path is None:
-            ui.notify("nothing to export yet", type="warning")
+        try:
+            path = self.engine.export.export_agent(agent)
+        except Exception as exc:
+            log.exception("export failed")
+            ui.notify(f"export failed: {type(exc).__name__}: {exc}", type="negative", timeout=10000)
             return
-        ui.download(str(path))
+        if path is None:
+            ui.notify(self.engine.export.why_empty(agent), type="warning", timeout=6000)
+            return
+        self._offer(path, agent.agent_id)
+
+    def _offer(self, path, detail: str) -> None:
+        """Hand the file to the browser, and name it on disk either way.
+
+        A blocked or silent browser download used to look like "export is
+        broken" when the file was sitting in the exports folder all along.
+        """
+        ui.notify(f"saved {path.name} ({detail}) to {path.parent}", timeout=10000)
+        try:
+            ui.download(path)
+        except Exception as exc:
+            log.warning("browser download failed: %s", exc)
+            ui.notify(
+                f"the browser would not download it — open {path}", type="warning", timeout=12000
+            )
 
     def save_workspace(self) -> None:
         specs = [p.spec for p in self.engine.pipelines.values()]

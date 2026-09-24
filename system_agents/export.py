@@ -43,6 +43,8 @@ class ExportAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         self.agents = agents or (lambda: [])
         self.last_export: Path | None = None
+        self.sheet_count = 0
+        self.tick_file_count = 0
 
     # -- destinations --------------------------------------------------------
     @property
@@ -55,6 +57,21 @@ class ExportAgent(BaseAgent):
         return clock.now().strftime("%Y%m%d_%H%M%S")
 
     # -- single agent --------------------------------------------------------
+    def why_empty(self, agent: BaseAgent) -> str:
+        """Explain an empty export instead of just refusing."""
+        status = {}
+        try:
+            status = agent.status()
+        except Exception:
+            pass
+        if agent.kind == "strategy" and not status.get("trades"):
+            return f"{agent.agent_id} has no closed trades yet"
+        if agent.kind == "indicator" and not status.get("evaluations"):
+            return f"{agent.agent_id} has not evaluated a closed candle yet"
+        if agent.kind == "data" and not status.get("bars"):
+            return f"{agent.agent_id} has no candles yet"
+        return f"{agent.agent_id} has nothing to export yet"
+
     def export_agent(self, agent: BaseAgent) -> Path | None:
         frames = _safe_frames(agent)
         if not frames:
@@ -65,21 +82,35 @@ class ExportAgent(BaseAgent):
         return path
 
     # -- everything ----------------------------------------------------------
+    def summary(self) -> pd.DataFrame:
+        """Every agent's status, so an export is never an empty file."""
+        rows = []
+        for agent in self.agents():
+            try:
+                status = agent.status()
+            except Exception:
+                status = {"error": "status() failed"}
+            for key, value in status.items():
+                rows.append({"agent": agent.agent_id, "field": key, "value": str(value)})
+        rows.append({"agent": "export", "field": "exported_at", "value": clock.now().isoformat()})
+        return pd.DataFrame(rows)
+
     def export_all(self) -> Path:
         stamp = self.stamp()
         workbook = self.out_dir / f"upstox_agents_{stamp}.xlsx"
-        sheets: dict[str, pd.DataFrame] = {}
+        sheets: dict[str, pd.DataFrame] = {"summary": self.summary()}
         for agent in self.agents():
             for title, frame in _safe_frames(agent).items():
                 sheets[_sheet_name(f"{agent.agent_id}_{title}", sheets)] = frame
-        if sheets:
-            _write_workbook(workbook, sheets)
+        self.sheet_count = len(sheets) - 1  # the summary does not count as data
+        _write_workbook(workbook, sheets)
         archive = self.out_dir / f"upstox_agents_{stamp}.zip"
+        tick_files = self._tick_files()
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-            if sheets:
-                zf.write(workbook, workbook.name)
-            for tick_file in self._tick_files():
+            zf.write(workbook, workbook.name)
+            for tick_file in tick_files:
                 zf.write(tick_file, f"ticks/{tick_file.name}")
+        self.tick_file_count = len(tick_files)
         self.last_export = archive
         return archive
 
@@ -95,6 +126,8 @@ class ExportAgent(BaseAgent):
                 "exports_dir": str(self.out_dir),
                 "last_export": str(self.last_export) if self.last_export else None,
                 "agents": len(list(self.agents())),
+                "data_sheets": self.sheet_count,
+                "tick_files": self.tick_file_count,
             }
         )
         return base

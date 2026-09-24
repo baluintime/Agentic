@@ -57,6 +57,10 @@ class MarketDataHub(BaseAgent):
         self.reconnects = 0
         self.connected = False
         self.fatal_error = ""
+        self.bad_messages = 0
+        self.last_disconnect: datetime | None = None
+        self.last_disconnect_reason = ""
+        self.connected_since: datetime | None = None
         self.base_backoff = 1.0
         self.max_backoff = 60.0
         self._task: asyncio.Task | None = None
@@ -128,6 +132,7 @@ class MarketDataHub(BaseAgent):
             try:
                 await self.client.connect()
                 self.connected = True
+                self.connected_since = clock.now()
                 backoff = self.base_backoff
                 if self.subscriptions:
                     await self.client.subscribe(self.subscriptions)
@@ -151,10 +156,21 @@ class MarketDataHub(BaseAgent):
                 if self._stopping:
                     return
                 self.reconnects += 1
-                self.log.warning("feed disconnected (%s); reconnecting in %.0fs", exc, backoff)
+                self.last_disconnect = clock.now()
+                self.last_disconnect_reason = describe(exc)
+                self.log.warning(
+                    "feed disconnected after %s (%s); reconnecting in %.0fs",
+                    _held_for(self.connected_since),
+                    self.last_disconnect_reason,
+                    backoff,
+                )
                 await self.emit(
                     system_topic("feed.disconnected"),
-                    _system("feed.disconnected", str(exc), {"reconnects": self.reconnects}),
+                    _system(
+                        "feed.disconnected",
+                        self.last_disconnect_reason,
+                        {"reconnects": self.reconnects},
+                    ),
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(self.max_backoff, backoff * 2)
@@ -167,7 +183,13 @@ class MarketDataHub(BaseAgent):
                     await self.client.close()
 
     async def _handle(self, message: dict[str, Any]) -> None:
-        for tick in ticks_from(message):
+        try:
+            ticks = ticks_from(message)
+        except Exception:  # a malformed frame is not a reason to drop the feed
+            self.log.exception("could not read a feed message")
+            self.bad_messages += 1
+            return
+        for tick in ticks:
             self.ticks += 1
             self.last_tick_at = tick.ts
             self.prices[tick.instrument_key] = tick
@@ -187,6 +209,11 @@ class MarketDataHub(BaseAgent):
                 "ticks": self.ticks,
                 "reconnects": self.reconnects,
                 "error": self.fatal_error,
+                "last_disconnect": (
+                    self.last_disconnect.strftime("%H:%M:%S") if self.last_disconnect else None
+                ),
+                "last_disconnect_reason": self.last_disconnect_reason,
+                "bad_messages": self.bad_messages or None,
                 "last_tick_at": self.last_tick_at.isoformat() if self.last_tick_at else None,
             }
         )
@@ -292,11 +319,16 @@ class UpstoxFeedClient:
         decode: Callable[[bytes], dict[str, Any]] | None = None,
         url: str = MARKET_FEED_WS,
         mode: str = "full",
+        ping_interval: float = 20,
+        ping_timeout: float = 20,
     ) -> None:
         self.rest = rest
         self.decode = decode or decode_feed
         self.url = url
         self.mode = mode  # "full" carries volume and OI; "ltpc" is price only
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
+        self.undecodable = 0
         self._ws: Any = None
 
     async def connect(self) -> None:
@@ -310,6 +342,11 @@ class UpstoxFeedClient:
             self.url,
             additional_headers={"Authorization": f"Bearer {self.rest.access_token}"},
             max_size=None,
+            # Detect a half-open connection quickly instead of sitting on a dead
+            # socket, and give the broker room to answer before declaring it lost.
+            ping_interval=self.ping_interval,
+            ping_timeout=self.ping_timeout,
+            close_timeout=5,
         )
 
     async def subscribe(self, keys: list[str]) -> None:
@@ -331,15 +368,41 @@ class UpstoxFeedClient:
         if self._ws is None:
             return
         async for frame in self._ws:
-            if isinstance(frame, bytes):
-                yield self.decode(frame)
-            else:
-                yield json.loads(frame)
+            try:
+                yield self.decode(frame) if isinstance(frame, bytes) else json.loads(frame)
+            except FeedUnavailable:
+                raise
+            except Exception:
+                # Skip the frame, keep the connection: dropping it here would
+                # reconnect on every message the decoder does not recognise.
+                self.undecodable += 1
+                continue
 
     async def close(self) -> None:
         if self._ws is not None:
             await self._ws.close()
             self._ws = None
+
+
+def describe(exc: Exception) -> str:
+    """Spell out a WebSocket close so the next report can be diagnosed.
+
+    `str(exc)` on a closed connection is often empty or "no close frame
+    received or sent", which says nothing about why the broker hung up.
+    """
+    code = getattr(getattr(exc, "rcvd", None), "code", None) or getattr(exc, "code", None)
+    reason = getattr(getattr(exc, "rcvd", None), "reason", "") or getattr(exc, "reason", "")
+    text = str(exc) or type(exc).__name__
+    if code:
+        return f"{text} [close {code}{': ' + reason if reason else ''}]"
+    return text
+
+
+def _held_for(since: datetime | None) -> str:
+    if since is None:
+        return "no connection"
+    seconds = (clock.now() - since).total_seconds()
+    return f"{seconds:.0f}s" if seconds < 120 else f"{seconds / 60:.1f}m"
 
 
 def _system(kind: str, message: str, payload: dict) -> Any:

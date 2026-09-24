@@ -591,3 +591,61 @@ async def test_sync_corrects_drift_against_the_strategies(sim_clock) -> None:
     assert agent.sync_open_positions({"p1"}) == 1  # only p1 is really holding
     assert agent.status()["open_positions"] == 1
     await bus.stop()
+
+
+# -- exports must never be silently empty ------------------------------------
+@pytest.mark.asyncio
+async def test_export_all_always_carries_a_summary(tmp_path, sim_clock) -> None:
+    """An export with no trades yet must still produce a readable file."""
+    import zipfile
+
+    import pandas as pd
+
+    store = Store(tmp_path)
+    agent = RecorderAgent("recorder", None, None, store)  # exports nothing
+    export = ExportAgent("export", None, None, store, agents=lambda: [agent])
+    archive = export.export_all()
+    with zipfile.ZipFile(archive) as zf:
+        names = zf.namelist()
+    assert any(n.endswith(".xlsx") for n in names)
+    assert archive.stat().st_size > 1000
+    workbook = next(p for p in store.exports.glob("*.xlsx"))
+    summary = pd.read_excel(workbook, sheet_name="summary")
+    assert {"agent", "field", "value"} == set(summary.columns)
+    assert "recorder" in set(summary["agent"])
+    assert export.status()["data_sheets"] == 0  # honest about having no data
+
+
+@pytest.mark.asyncio
+async def test_export_all_reports_what_went_in(tmp_path, sim_clock) -> None:
+    import pandas as pd
+
+    store = Store(tmp_path)
+
+    class WithData(RecorderAgent):
+        def export_frames(self):
+            return {"rows": pd.DataFrame({"a": [1, 2]})}
+
+    export = ExportAgent("export", None, None, store, agents=lambda: [WithData("d", None, None)])
+    export.export_all()
+    assert export.status()["data_sheets"] == 1
+
+
+def test_an_empty_agent_export_explains_itself(tmp_path) -> None:
+    store = Store(tmp_path)
+    export = ExportAgent("export", None, None, store)
+    recorder = RecorderAgent("recorder", None, None, store)
+    assert export.export_agent(recorder) is None
+    assert "nothing to export" in export.why_empty(recorder)
+
+
+def test_why_empty_names_the_real_reason(tmp_path) -> None:
+    from core.pipeline import PipelineSpec
+    from core.strategy_base import StrategyAgent, StrategyConfig
+
+    export = ExportAgent("export", None, None, Store(tmp_path))
+    spec = PipelineSpec(
+        underlying_key="K", underlying_symbol="NIFTY", indicator="macd", strategy="s"
+    )
+    strategy = StrategyAgent("s1", StrategyConfig(), None, None, spec=spec)
+    assert "no closed trades" in export.why_empty(strategy)

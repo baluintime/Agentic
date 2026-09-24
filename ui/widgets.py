@@ -231,10 +231,18 @@ class PricesCard:
         if hub.client is None:
             return "no feed attached — log in to Upstox"
         if not connected:
-            return f"connecting… ({hub.reconnects} reconnect(s))"
+            note = f"connecting… ({hub.reconnects} reconnect(s))"
+            if hub.last_disconnect_reason:
+                note += f" — last drop {hub.last_disconnect} : {hub.last_disconnect_reason}"
+            return note
         if not hub.ticks:
             return "connected, waiting for the first tick — the market may be closed"
-        return f"{hub.ticks:,} ticks received"
+        note = f"{hub.ticks:,} ticks received"
+        if hub.reconnects:
+            note += f" · {hub.reconnects} reconnect(s), last at {hub.last_disconnect}"
+            if hub.last_disconnect_reason:
+                note += f" ({hub.last_disconnect_reason})"
+        return note
 
 
 def _age(now, then) -> str:

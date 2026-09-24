@@ -99,6 +99,21 @@ the exchange rejects.
 Lots and indicator periods are whole numbers; anything else is refused with a
 message naming the field.
 
+## Exports
+
+`Download All` and each widget's `Export` button write into
+`$UPSTOX_RUNTIME_DIR/exports/` and then hand the file to the browser. The
+console always tells you the filename and folder, so if your browser blocks or
+silently discards the download the file is still on disk where the message says.
+
+Every archive contains a `summary` sheet listing every agent's status, so an
+export taken before the first trade is still a useful file. Trades, orders,
+indicator values and candles get a sheet each; ticks go in as Parquet because a
+liquid instrument can exceed Excel's row limit in a single day.
+
+A widget whose `Export` button reports "nothing to export yet" says why —
+no closed trades, no evaluated candles — rather than failing silently.
+
 ## Using the console
 
 The console opens on the pipelines page. Add a
